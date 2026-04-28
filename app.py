@@ -34,6 +34,7 @@ SEARCH_LABEL = "關鍵字"
 TRANSACTION_QUERY = os.environ.get("TRANSACTION_QUERY", "")
 SECURITIES_QUERY    = os.environ.get("SECURITIES_QUERY", "")
 SECURITIES_PDF_PWD  = os.environ.get("SECURITIES_PDF_PASSWORD", "")
+TRANSFER_QUERY      = os.environ.get("TRANSFER_QUERY", "")
 DOWNLOAD_DIR = "attachments"
 
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
@@ -453,6 +454,115 @@ def transactions_export():
         "\ufeff" + buf.getvalue(),   # BOM for Excel UTF-8
         mimetype="text/csv",
         headers={"Content-Disposition": "attachment; filename=transactions.csv"},
+    )
+
+
+# ── 台幣轉帳成功通知解析 ──────────────────────────────────────────────
+
+# 抓 <th>...</th> 內文
+_TH_RE = re.compile(r"<th\b[^>]*>(.*?)</th>", re.S | re.I)
+# 抓單一 <td>...</td> 內文
+_TD_SINGLE_RE = re.compile(r"<td\b[^>]*>(.*?)</td>", re.S | re.I)
+
+
+def _parse_transfer_html(html: str, email_date: str, subject: str) -> dict | None:
+    """從轉帳通知郵件 HTML 中提取 key-value 欄位"""
+    record = {"_email_date": email_date, "_subject": subject}
+    for tr_m in _TR_RE.finditer(html):
+        tr_content = tr_m.group(1)
+        th_m = _TH_RE.search(tr_content)
+        td_m = _TD_SINGLE_RE.search(tr_content)
+        if th_m and td_m:
+            key = _td_text(th_m.group(1)).rstrip("：: \u3000")
+            val = _td_text(td_m.group(1))
+            if key:
+                record[key] = val
+    # 至少需要有交易時間才算有效
+    if "交易時間" not in record:
+        return None
+    # 金額去除「元」與千分位
+    for f in ("交易金額", "手續費"):
+        if f in record:
+            record[f] = record[f].replace("元", "").replace(",", "").strip()
+    return record
+
+
+@app.route("/transfers")
+def transfers():
+    service, err = _get_service()
+    if err:
+        return err
+
+    results = service.users().messages().list(
+        userId="me",
+        q=f'subject:"{TRANSFER_QUERY}"',
+        maxResults=200,
+    ).execute()
+    messages_list = results.get("messages", [])
+
+    records = []
+    for msg_ref in messages_list:
+        msg = service.users().messages().get(
+            userId="me", id=msg_ref["id"], format="full"
+        ).execute()
+        headers    = {h["name"]: h["value"] for h in msg["payload"].get("headers", [])}
+        email_date = headers.get("Date", "")
+        subject    = headers.get("Subject", "")
+        html       = _get_body_html(msg["payload"])
+        rec = _parse_transfer_html(html, email_date, subject)
+        if rec:
+            records.append(rec)
+
+    records.sort(key=lambda r: r.get("交易時間", ""), reverse=True)
+
+    total_out = sum(
+        int(r["交易金額"]) for r in records
+        if r.get("交易金額", "").lstrip("-+").isdigit()
+    )
+
+    return render_template("transfers.html", records=records, total_out=total_out)
+
+
+@app.route("/transfers/export")
+def transfers_export():
+    service, err = _get_service()
+    if err:
+        return err
+
+    results = service.users().messages().list(
+        userId="me",
+        q=f'subject:"{TRANSFER_QUERY}"',
+        maxResults=200,
+    ).execute()
+    messages_list = results.get("messages", [])
+
+    records = []
+    for msg_ref in messages_list:
+        msg = service.users().messages().get(
+            userId="me", id=msg_ref["id"], format="full"
+        ).execute()
+        headers    = {h["name"]: h["value"] for h in msg["payload"].get("headers", [])}
+        email_date = headers.get("Date", "")
+        subject    = headers.get("Subject", "")
+        html       = _get_body_html(msg["payload"])
+        rec = _parse_transfer_html(html, email_date, subject)
+        if rec:
+            records.append(rec)
+
+    records.sort(key=lambda r: r.get("交易時間", ""), reverse=True)
+
+    fieldnames = ["交易時間", "交易金額", "手續費",
+                  "轉出銀行", "轉出帳號", "轉入銀行", "轉入帳號", "收款戶名",
+                  "轉出帳戶存摺摘要", "轉入帳戶存摺摘要", "交易說明"]
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    writer.writerows(records)
+
+    return Response(
+        "\ufeff" + buf.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": "attachment; filename=transfers.csv"},
     )
 
 

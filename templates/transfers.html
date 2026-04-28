@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>台幣轉帳通知彙整</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: "Segoe UI", "Microsoft JhengHei", sans-serif; background: #f0f4f8; color: #333; }
+    header { background: #1565c0; color: #fff; padding: 16px 40px;
+             display: flex; align-items: center; justify-content: space-between; }
+    header h1 { font-size: 1.3rem; }
+    header a { color: #bbdefb; font-size: 0.9rem; text-decoration: none; margin-left: 16px; }
+    header a:hover { color: #fff; }
+
+    .toolbar { max-width: 1200px; margin: 24px auto 0; padding: 0 20px;
+               display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+    .stats { font-size: 0.95rem; color: #555; }
+    .stats strong { color: #1565c0; }
+    .export-btn { background: #1565c0; color: #fff; padding: 8px 20px; border-radius: 8px;
+                  font-size: 0.9rem; font-weight: 600; text-decoration: none; }
+    .export-btn:hover { background: #0d47a1; }
+
+    .filter-bar { max-width: 1200px; margin: 12px auto 0; padding: 0 20px; }
+    .filter-bar input { padding: 8px 14px; border: 1px solid #ccc; border-radius: 8px;
+                        font-size: 0.9rem; width: 280px; }
+
+    .container { max-width: 1200px; margin: 14px auto 40px; padding: 0 20px; overflow-x: auto; }
+
+    table { width: 100%; border-collapse: collapse; background: #fff;
+            border-radius: 12px; overflow: hidden;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.07); font-size: 0.87rem; }
+    thead tr { background: #1565c0; color: #fff; }
+    thead th { padding: 11px 14px; text-align: left; white-space: nowrap; font-weight: 600; }
+    thead th.num { text-align: right; }
+    tbody tr:nth-child(even) { background: #f4f8ff; }
+    tbody tr:hover { background: #dce8ff; }
+    tbody td { padding: 9px 14px; border-bottom: 1px solid #f0f0f0; white-space: nowrap; }
+    tbody td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    tfoot td { padding: 11px 14px; font-weight: 700; background: #e3f2fd;
+               border-top: 2px solid #1565c0; }
+    tfoot td.num { text-align: right; color: #c62828; font-size: 1.05rem; }
+
+    .empty { text-align: center; padding: 60px 20px; background: #fff;
+             border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.07); color: #888; }
+    footer { text-align: center; color: #bbb; font-size: 0.8rem; padding: 20px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🏦 台幣轉帳通知彙整</h1>
+    <div>
+      <a href="/">首頁</a>
+      <a href="/logout">登出</a>
+    </div>
+  </header>
+
+  <div class="toolbar">
+    <p class="stats">
+      共 <strong>{{ records|length }}</strong> 筆轉帳紀錄
+      &nbsp;｜&nbsp;
+      合計金額 <strong>{{ "{:,}".format(total_out) }}</strong> 元
+    </p>
+    {% if records %}
+    <a href="/transfers/export" class="export-btn">⬇ 匯出 CSV</a>
+    {% endif %}
+  </div>
+
+  {% if records %}
+  <div class="filter-bar">
+    <input type="text" id="filterInput" placeholder="🔍 篩選帳號、戶名、時間…" onkeyup="filterTable()"/>
+  </div>
+
+  <div class="container">
+    <table id="txTable">
+      <thead>
+        <tr>
+          <th>交易時間</th>
+          <th class="num">交易金額</th>
+          <th class="num">手續費</th>
+          <th>轉出銀行</th>
+          <th>轉出帳號</th>
+          <th>轉入銀行</th>
+          <th>轉入帳號</th>
+          <th>收款戶名</th>
+          <th>轉出帳戶存摺摘要</th>
+          <th>轉入帳戶存摺摘要</th>
+          <th>交易說明</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in records %}
+        <tr>
+          <td>{{ r.get("交易時間", "") }}</td>
+          <td class="num">{{ "{:,}".format(r["交易金額"]|int) if r.get("交易金額","").lstrip("-+").isdigit() else r.get("交易金額","") }}</td>
+          <td class="num">{{ r.get("手續費", "") }}</td>
+          <td>{{ r.get("轉出銀行", "") }}</td>
+          <td>{{ r.get("轉出帳號", "") }}</td>
+          <td>{{ r.get("轉入銀行", "") }}</td>
+          <td>{{ r.get("轉入帳號", "") }}</td>
+          <td>{{ r.get("收款戶名", "") }}</td>
+          <td>{{ r.get("轉出帳戶存摺摘要", "") }}</td>
+          <td>{{ r.get("轉入帳戶存摺摘要", "") }}</td>
+          <td>{{ r.get("交易說明", "") }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+      <tfoot>
+        <tr>
+          <td colspan="1">合計</td>
+          <td class="num">{{ "{:,}".format(total_out) }}</td>
+          <td colspan="9"></td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+  {% else %}
+    <div class="container">
+      <div class="empty">😕 找不到符合條件的轉帳通知郵件。</div>
+    </div>
+  {% endif %}
+
+  <footer>由 Gmail API 提供支援</footer>
+
+  <script>
+    function filterTable() {
+      const q = document.getElementById("filterInput").value.toLowerCase();
+      document.querySelectorAll("#txTable tbody tr").forEach(row => {
+        row.style.display = row.textContent.toLowerCase().includes(q) ? "" : "none";
+      });
+    }
+  </script>
+</body>
+</html>
