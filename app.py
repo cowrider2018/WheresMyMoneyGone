@@ -3,6 +3,8 @@ import re
 import base64
 import hashlib
 import secrets
+import mimetypes
+from urllib.parse import quote, unquote
 from flask import Flask, redirect, request, session, url_for, render_template, send_file, Response
 from google_auth_oauthlib.flow import Flow
 from google.oauth2.credentials import Credentials
@@ -178,6 +180,7 @@ def _collect_attachments(payload, message_id, attachments):
         if filename and attachment_id:
             attachments.append({
                 "filename": filename,
+                "filename_encoded": quote(filename, safe=""),
                 "attachment_id": attachment_id,
                 "message_id": message_id,
                 "mime_type": payload.get("mimeType", "application/octet-stream"),
@@ -204,29 +207,44 @@ def download_attachment(message_id, attachment_id):
 
     file_data = base64.urlsafe_b64decode(attachment["data"].encode("UTF-8"))
 
-    # 取得檔案名稱
-    msg = service.users().messages().get(
-        userId="me", id=message_id, format="full"
-    ).execute()
-    filename = _find_attachment_filename(msg["payload"], attachment_id) or "attachment"
+    # 優先從 query string 取得已知的 filename（由 _collect_attachments 傳入）
+    raw_name = request.args.get("filename", "")
+    filename = unquote(raw_name).strip() if raw_name else ""
 
-    return send_file(
-        io.BytesIO(file_data),
-        download_name=filename,
-        as_attachment=True,
+    # 若 query string 沒帶（直接輸入 URL），再向 API 查一次
+    if not filename:
+        msg = service.users().messages().get(
+            userId="me", id=message_id, format="full"
+        ).execute()
+        filename = _find_attachment_filename(msg["payload"], attachment_id) or "attachment"
+
+    # 決定 MIME type（優先 mimetypes 推斷，再用 query string 傳入的）
+    mime_type, _ = mimetypes.guess_type(filename)
+    if not mime_type:
+        mime_type = request.args.get("mime", "application/octet-stream")
+
+    # RFC 5987：Content-Disposition 支援非 ASCII 檔名
+    ascii_name = filename.encode("ascii", errors="replace").decode("ascii")
+    encoded_name = quote(filename, safe="")
+    disposition = f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{encoded_name}"
+
+    response = Response(
+        file_data,
+        mimetype=mime_type,
+        headers={"Content-Disposition": disposition},
     )
+    return response
 
 
 def _find_attachment_filename(payload, attachment_id):
-    if "parts" in payload:
-        for part in payload["parts"]:
-            result = _find_attachment_filename(part, attachment_id)
-            if result:
-                return result
-    else:
-        body = payload.get("body", {})
-        if body.get("attachmentId") == attachment_id:
-            return payload.get("filename", "attachment")
+    """遞迴搜尋所有節點（含中間節點）以找到對應的檔名"""
+    body = payload.get("body", {})
+    if body.get("attachmentId") == attachment_id:
+        return payload.get("filename") or None
+    for part in payload.get("parts", []):
+        result = _find_attachment_filename(part, attachment_id)
+        if result:
+            return result
     return None
 
 

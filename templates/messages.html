@@ -84,7 +84,7 @@
               {% for att in email.attachments %}
               <div class="attach-item">
                 <span class="attach-icon">📄</span>
-                <a href="/download/{{ att.message_id }}/{{ att.attachment_id }}" title="{{ att.mime_type }}">
+                <a href="/download/{{ att.message_id }}/{{ att.attachment_id }}?filename={{ att.filename_encoded }}&mime={{ att.mime_type | urlencode }}" title="{{ att.mime_type }}">
                   {{ att.filename }}
                 </a>
               </div>
