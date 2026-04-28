@@ -13,6 +13,7 @@ from googleapiclient.discovery import build
 from dotenv import load_dotenv
 import io
 import csv
+import fitz  # PyMuPDF
 
 load_dotenv()
 
@@ -30,7 +31,9 @@ SCOPES = [
 # 實際關鍵字從 .env 載入，不寫死於程式碼中
 SEARCH_QUERY = os.environ.get("SEARCH_QUERY", "")
 SEARCH_LABEL = "關鍵字"
-TRANSACTION_QUERY = os.environ.get("TRANSACTION_QUERY", "第一銀行簽帳金融卡消費彙整通知")
+TRANSACTION_QUERY = os.environ.get("TRANSACTION_QUERY", "")
+SECURITIES_QUERY    = os.environ.get("SECURITIES_QUERY", "")
+SECURITIES_PDF_PWD  = os.environ.get("SECURITIES_PDF_PASSWORD", "")
 DOWNLOAD_DIR = "attachments"
 
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
@@ -450,6 +453,339 @@ def transactions_export():
         "\ufeff" + buf.getvalue(),   # BOM for Excel UTF-8
         mimetype="text/csv",
         headers={"Content-Disposition": "attachment; filename=transactions.csv"},
+    )
+
+
+# ── 有價證券買賣對帳單 PDF 解析 ─────────────────────────────────────
+
+# 民國年日期，例：115/01/08
+_ROC_DATE_RE  = re.compile(r"^(\d{3}/\d{2}/\d{2})$")
+# 金額（含正負號、千分位）
+_AMOUNT_RE    = re.compile(r"^[+\-]?[\d,]+$")
+# 單價（小數點數字）
+_PRICE_RE     = re.compile(r"^[\d,]+\.\d+$")
+
+SEC_TX_COLS = [
+    "交易日期", "交易類別", "證券名稱",
+    "單價", "股數", "成交金額",
+    "手續費", "證交稅",
+    "資自備款/擔保價款", "融資金額/券保證金",
+    "資券利息", "券手續費", "代扣稅款",
+    "證所稅/健保費", "本公司淨收+/本公司淨付-",
+]
+
+SEC_TOTAL_COLS = [
+    "總計股數", "總計成交金額", "總計手續費", "總計證交稅",
+    "總計資自備款/擔保價款", "總計融資金額/券保證金",
+    "總計資券利息", "總計券手續費", "總計代扣稅款",
+    "總計證所稅/健保費", "總計本公司淨收+/本公司淨付-",
+]
+
+
+def _clean_num(s: str) -> str:
+    """移除千分位逗號，保留正負號"""
+    return s.replace(",", "")
+
+
+def _roc_to_ad(roc: str) -> str:
+    """民國年 -> 西元年，例：115/01/08 -> 2026/01/08"""
+    try:
+        y, m, d = roc.split("/")
+        return f"{int(y)+1911}/{m}/{d}"
+    except Exception:
+        return roc
+
+
+def _fetch_pdf_bytes(service, message_id: str, attachment_id: str) -> bytes:
+    att = service.users().messages().attachments().get(
+        userId="me", messageId=message_id, id=attachment_id
+    ).execute()
+    return base64.urlsafe_b64decode(att["data"].encode("UTF-8"))
+
+
+def _parse_securities_pdf(pdf_bytes: bytes, email_date: str) -> dict:
+    """
+    用 PyMuPDF 讀取對帳單 PDF，以 regex 提煉交易明細與統計資訊。
+    回傳 dict: { transactions, totals, notes, email_date }
+    """
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    if doc.is_encrypted:
+        result = doc.authenticate(SECURITIES_PDF_PWD)
+        if result == 0:
+            doc.close()
+            raise ValueError("PDF 密碼錯誤或無法解密，請確認 .env 中的 SECURITIES_PDF_PASSWORD")
+    lines = []
+    for page in doc:
+        text = page.get_text("text")
+        for ln in text.splitlines():
+            ln = ln.strip()
+            if ln:
+                lines.append(ln)
+    doc.close()
+
+    transactions = []
+    totals       = {}
+    notes        = {}
+
+    # ── 定位標題行，找出欄位順序 ─────────────────────────────────
+    FIELD_ORDER = [
+        "交易日期", "交易類別", "證券名稱",
+        "單價", "股數", "成交金額",
+        "手續費", "證交稅",
+        "資自備款",  # 可能含「擔保價款」在同欄
+        "融資金額",  # 可能含「券保證金」
+        "資券利息", "券手續費", "代扣稅款",
+        "證所稅",   # 可能含「健保費」
+        "本公司淨", # 淨收/淨付
+    ]
+
+    # ── 找所有交易區塊 ────────────────────────────────────────────
+    # 結構固定：
+    #   line[i]      = 民國日期（交易日期）
+    #   line[i+1]    = 交易類別（固定 1 行）
+    #   line[i+2...) = 證券名稱（1 行或多行，直到第一個純數字行）
+    #   純數字行起   = 單價、股數、成交金額、手續費…共 12 個數值欄位
+
+    def _is_numeric_field(s: str) -> bool:
+        """判斷是否為數值欄位（整數/小數/含正負號/含千分位）"""
+        return bool(re.fullmatch(r"[+\-]?[\d,]+(\.\d+)?", s.strip()))
+
+    i = 0
+    while i < len(lines):
+        m = _ROC_DATE_RE.match(lines[i])
+        if m:
+            date_roc = m.group(1)
+            j = i + 1
+
+            # 跳過空行／標題行，取交易類別（固定 1 個值行）
+            category = ""
+            while j < len(lines) and not category:
+                val = lines[j].strip()
+                j += 1
+                if val and not _is_header_line(val) and not _is_numeric_field(val):
+                    category = val
+
+            # 收集證券名稱（多行，直到第一個純數字行）
+            name_parts = []
+            while j < len(lines):
+                val = lines[j].strip()
+                if not val or _is_header_line(val):
+                    j += 1
+                    continue
+                if _is_numeric_field(val):
+                    break          # 數字行 → 名稱結束，不推進 j
+                name_parts.append(val)
+                j += 1
+            security_name = " ".join(name_parts)
+
+            # 收集 12 個數值欄位：單價、股數、成交金額、手續費、
+            # 證交稅、資自備款/擔保、融資/券保證金、資券利息、
+            # 券手續費、代扣稅款、證所稅/健保費、本公司淨收付
+            num_fields = []
+            while j < len(lines) and len(num_fields) < 12:
+                val = lines[j].strip()
+                j += 1
+                if val and _is_numeric_field(val):
+                    num_fields.append(_clean_num(val))
+
+            if security_name and len(num_fields) == 12:
+                transactions.append({
+                    "交易日期":                _roc_to_ad(date_roc),
+                    "交易類別":                category,
+                    "證券名稱":                security_name,
+                    "單價":                   num_fields[0],
+                    "股數":                   num_fields[1],
+                    "成交金額":                num_fields[2],
+                    "手續費":                 num_fields[3],
+                    "證交稅":                 num_fields[4],
+                    "資自備款/擔保價款":         num_fields[5],
+                    "融資金額/券保證金":         num_fields[6],
+                    "資券利息":                num_fields[7],
+                    "券手續費":                num_fields[8],
+                    "代扣稅款":                num_fields[9],
+                    "證所稅/健保費":            num_fields[10],
+                    "本公司淨收+/本公司淨付-":   num_fields[11],
+                })
+            i = j
+            continue
+
+        # ── 總計區塊 ─────────────────────────────────────────────
+        if lines[i].startswith("總計"):
+            total_vals = []
+            j = i + 1
+            while j < len(lines) and len(total_vals) < 11:
+                val = lines[j].strip()
+                if val and _AMOUNT_RE.match(val.replace(",", "").lstrip("+-")):
+                    total_vals.append(_clean_num(val))
+                j += 1
+            if len(total_vals) == 11:
+                for k, col in enumerate(SEC_TOTAL_COLS):
+                    totals[col] = total_vals[k]
+            i = j
+            continue
+
+        # ── 附註（本月 xxx 合計）────────────────────────────────────
+        note_m = re.search(r"本月(.+?)合計金額為[\s\n]*([\d,]+)", lines[i])
+        if note_m:
+            notes[f"本月{note_m.group(1)}合計金額"] = _clean_num(note_m.group(2))
+
+        # ── 客戶訊息（折讓金額）─────────────────────────────────────
+        disc_m = re.search(r"一般折讓金額[^:：]*[:：]\$?([\d,]+)", lines[i])
+        if disc_m:
+            notes["一般折讓金額"] = _clean_num(disc_m.group(1))
+        promo_m = re.search(r"促銷折讓金額[^:：]*[:：]\$?([\d,]+)", lines[i])
+        if promo_m:
+            notes["促銷折讓金額"] = _clean_num(promo_m.group(1))
+
+        # ── 跨行合併附註（下一行是數值）────────────────────────────────
+        if i + 1 < len(lines):
+            two = lines[i] + lines[i+1]
+            note_m2 = re.search(r"本月(.+?)合計金額為[\s]*([\d,]+)", two)
+            if note_m2:
+                notes[f"本月{note_m2.group(1)}合計金額"] = _clean_num(note_m2.group(2))
+
+        i += 1
+
+    return {
+        "transactions": transactions,
+        "totals":       totals,
+        "notes":        notes,
+        "email_date":   email_date,
+    }
+
+
+def _is_header_line(val: str) -> bool:
+    """判斷是否為欄位標題列（僅比對已知標題關鍵字，不以純中文判斷）"""
+    KNOWN_HEADERS = {
+        "交易日期", "交易類別", "證券名稱", "單價", "股數", "成交金額",
+        "手續費", "證交稅", "資自備款", "擔保價款", "融資金額", "券保證金",
+        "資券利息", "券手續費", "代扣稅款", "證所稅", "健保費",
+        "本公司淨收", "本公司淨付", "總計",
+    }
+    return any(h in val for h in KNOWN_HEADERS) and not _AMOUNT_RE.match(val.replace(",", "").lstrip("+-"))
+
+
+def _get_service():
+    creds = get_credentials()
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+            save_credentials(creds)
+        else:
+            return None, redirect(url_for("login"))
+    return build("gmail", "v1", credentials=creds), None
+
+
+@app.route("/securities")
+def securities():
+    service, err = _get_service()
+    if err:
+        return err
+
+    results = service.users().messages().list(
+        userId="me",
+        q=f'subject:"{SECURITIES_QUERY}" has:attachment filename:pdf',
+        maxResults=50,
+    ).execute()
+    messages_list = results.get("messages", [])
+
+    reports = []  # list of parsed report dicts
+
+    for msg_ref in messages_list:
+        msg = service.users().messages().get(
+            userId="me", id=msg_ref["id"], format="full"
+        ).execute()
+        headers    = {h["name"]: h["value"] for h in msg["payload"].get("headers", [])}
+        email_date = headers.get("Date", "")
+        subject    = headers.get("Subject", "")
+
+        # 找 PDF 附檔
+        pdf_attachments = []
+        _collect_pdf_attachments(msg["payload"], msg_ref["id"], pdf_attachments)
+
+        for att in pdf_attachments:
+            try:
+                pdf_bytes = _fetch_pdf_bytes(service, msg_ref["id"], att["attachment_id"])
+                report = _parse_securities_pdf(pdf_bytes, email_date)
+                report["subject"]  = subject
+                report["filename"] = att["filename"]
+                reports.append(report)
+            except Exception as e:
+                reports.append({
+                    "subject":      subject,
+                    "filename":     att["filename"],
+                    "email_date":   email_date,
+                    "transactions": [],
+                    "totals":       {},
+                    "notes":        {},
+                    "error":        str(e),
+                })
+
+    return render_template(
+        "securities.html",
+        reports=reports,
+        tx_cols=SEC_TX_COLS,
+        total_cols=SEC_TOTAL_COLS,
+    )
+
+
+def _collect_pdf_attachments(payload, message_id, result):
+    """遞迴收集 PDF 附檔"""
+    if "parts" in payload:
+        for part in payload["parts"]:
+            _collect_pdf_attachments(part, message_id, result)
+    else:
+        filename = payload.get("filename", "")
+        body     = payload.get("body", {})
+        att_id   = body.get("attachmentId")
+        mime     = payload.get("mimeType", "")
+        if att_id and (mime == "application/pdf" or filename.lower().endswith(".pdf")):
+            result.append({"filename": filename, "attachment_id": att_id})
+
+
+@app.route("/securities/export")
+def securities_export():
+    service, err = _get_service()
+    if err:
+        return err
+
+    results = service.users().messages().list(
+        userId="me",
+        q=f'subject:"{SECURITIES_QUERY}" has:attachment filename:pdf',
+        maxResults=50,
+    ).execute()
+    messages_list = results.get("messages", [])
+
+    all_rows = []
+    for msg_ref in messages_list:
+        msg = service.users().messages().get(
+            userId="me", id=msg_ref["id"], format="full"
+        ).execute()
+        headers    = {h["name"]: h["value"] for h in msg["payload"].get("headers", [])}
+        email_date = headers.get("Date", "")
+        subject    = headers.get("Subject", "")
+        pdf_attachments = []
+        _collect_pdf_attachments(msg["payload"], msg_ref["id"], pdf_attachments)
+        for att in pdf_attachments:
+            try:
+                pdf_bytes = _fetch_pdf_bytes(service, msg_ref["id"], att["attachment_id"])
+                report = _parse_securities_pdf(pdf_bytes, email_date)
+                for tx in report["transactions"]:
+                    tx["來源郵件"] = subject
+                    all_rows.append(tx)
+            except Exception:
+                pass
+
+    fieldnames = ["來源郵件"] + SEC_TX_COLS
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    writer.writerows(all_rows)
+
+    return Response(
+        "\ufeff" + buf.getvalue(),
+        mimetype="text/csv",
+        headers={"Content-Disposition": "attachment; filename=securities.csv"},
     )
 
 
