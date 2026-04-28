@@ -111,7 +111,7 @@ def oauth2callback():
     )
     creds = flow.credentials
     save_credentials(creds)
-    return redirect(url_for("messages"))
+    return redirect(url_for("index"))
 
 
 @app.route("/logout")
