@@ -1,0 +1,47 @@
+# === Google OAuth 憑證（絕對不可上傳）===
+credentials.json
+token.json
+client_secret*.json
+
+# === 下載的 Gmail 附件 ===
+attachments/
+
+# === Python 虛擬環境 ===
+.venv/
+venv/
+env/
+ENV/
+
+# === Python 編譯快取 ===
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# === 打包 / 發布 ===
+dist/
+build/
+*.egg-info/
+*.egg
+
+# === 測試與覆蓋率 ===
+.pytest_cache/
+.coverage
+htmlcov/
+
+# === 環境變數 ===
+.env
+.env.*
+
+# === IDE / 編輯器 ===
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# === macOS ===
+.DS_Store
+
+# === Windows ===
+Thumbs.db
+desktop.ini

@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Gmail 關鍵字郵件查詢工具</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: "Segoe UI", "Microsoft JhengHei", sans-serif; background: #f0f4f8; color: #333; }
+    header { background: #1a73e8; color: #fff; padding: 20px 40px; }
+    header h1 { font-size: 1.6rem; }
+    .container { max-width: 700px; margin: 60px auto; background: #fff; border-radius: 12px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.1); padding: 48px 40px; text-align: center; }
+    .container h2 { font-size: 1.4rem; margin-bottom: 16px; }
+    .container p { color: #666; margin-bottom: 32px; line-height: 1.7; }
+    .btn { display: inline-block; padding: 14px 36px; border-radius: 8px;
+      font-size: 1rem; font-weight: 600; text-decoration: none; cursor: pointer; border: none; }
+    .btn-primary { background: #1a73e8; color: #fff; }
+    .btn-primary:hover { background: #1558b0; }
+    .badge { display: inline-block; background: #e8f0fe; color: #1a73e8;
+      border-radius: 6px; padding: 4px 12px; font-size: 0.85rem; margin-bottom: 24px; }
+  </style>
+</head>
+<body>
+  <header><h1>📧 Gmail 關鍵字郵件查詢工具</h1></header>
+  <div class="container">
+    {% if authenticated %}
+      <h2>已登入 Google 帳號</h2>
+      <p>點擊下方按鈕，查詢所有符合關鍵字的 Gmail 郵件與附件。</p>
+      <a href="/messages" class="btn btn-primary">🔍 開始查詢郵件</a>
+      <br/><br/>
+      <a href="/logout" style="color:#999; font-size:0.85rem;">登出</a>
+    {% else %}
+      <span class="badge">需要 Google 帳號授權</span>
+      <h2>請先登入 Google 帳號</h2>
+      <p>本工具將透過 Gmail API 搜尋您帳號中<br/>所有符合關鍵字的郵件與附件。</p>
+      <a href="/login" class="btn btn-primary">🔐 使用 Google 帳號登入</a>
+    {% endif %}
+  </div>
+</body>
+</html>

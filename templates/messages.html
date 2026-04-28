@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>郵件查詢結果</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: "Segoe UI", "Microsoft JhengHei", sans-serif; background: #f0f4f8; color: #333; }
+    header { background: #1a73e8; color: #fff; padding: 16px 40px; display: flex; align-items: center; justify-content: space-between; }
+    header h1 { font-size: 1.3rem; }
+    header a { color: #cce0ff; font-size: 0.9rem; text-decoration: none; }
+    header a:hover { color: #fff; }
+    .toolbar { max-width: 1000px; margin: 24px auto 0; padding: 0 20px; display: flex; align-items: center; gap: 16px; }
+    .toolbar .info { font-size: 0.95rem; color: #555; }
+    .toolbar .info strong { color: #1a73e8; }
+    .container { max-width: 1000px; margin: 16px auto 40px; padding: 0 20px; }
+    .empty { text-align: center; padding: 60px 20px; background: #fff; border-radius: 12px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.07); }
+    .empty p { color: #888; font-size: 1.05rem; }
+    .card { background: #fff; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+      margin-bottom: 18px; overflow: hidden; transition: box-shadow 0.2s; }
+    .card:hover { box-shadow: 0 4px 16px rgba(0,0,0,0.13); }
+    .card-header { padding: 18px 24px 12px; border-bottom: 1px solid #f0f0f0; }
+    .card-header .subject { font-size: 1.05rem; font-weight: 600; color: #1a1a1a; margin-bottom: 6px; }
+    .card-header .meta { font-size: 0.83rem; color: #888; display: flex; gap: 16px; flex-wrap: wrap; }
+    .card-header .meta span { display: flex; align-items: center; gap: 4px; }
+    .card-body { padding: 14px 24px; }
+    .snippet { font-size: 0.88rem; color: #555; line-height: 1.6; }
+    .attachments { margin-top: 14px; }
+    .attachments-title { font-size: 0.82rem; font-weight: 600; color: #444; margin-bottom: 8px;
+      text-transform: uppercase; letter-spacing: 0.05em; }
+    .attach-list { display: flex; flex-wrap: wrap; gap: 8px; }
+    .attach-item { display: flex; align-items: center; gap: 6px; background: #f1f8ff;
+      border: 1px solid #cce0ff; border-radius: 8px; padding: 6px 14px; font-size: 0.85rem; }
+    .attach-item a { color: #1a73e8; text-decoration: none; font-weight: 500; }
+    .attach-item a:hover { text-decoration: underline; }
+    .attach-icon { font-size: 1rem; }
+    .badge-count { background: #e8f0fe; color: #1a73e8; border-radius: 20px;
+      padding: 2px 10px; font-size: 0.78rem; font-weight: 600; margin-left: 6px; }
+    footer { text-align: center; color: #bbb; font-size: 0.8rem; padding: 20px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>📧 郵件查詢結果</h1>
+    <div>
+      <a href="/">⬅ 返回首頁</a>
+      &nbsp;&nbsp;
+      <a href="/logout">登出</a>
+    </div>
+  </header>
+
+  <div class="toolbar">
+    <p class="info">
+      搜尋關鍵字：<strong>{{ label }}</strong>
+      &nbsp;｜&nbsp;
+      共找到 <strong>{{ emails|length }}</strong> 封郵件
+    </p>
+  </div>
+
+  <div class="container">
+    {% if emails %}
+      {% for email in emails %}
+      <div class="card">
+        <div class="card-header">
+          <div class="subject">
+            {{ email.subject }}
+            {% if email.attachments %}
+              <span class="badge-count">📎 {{ email.attachments|length }} 個附件</span>
+            {% endif %}
+          </div>
+          <div class="meta">
+            <span>👤 {{ email.sender }}</span>
+            <span>📅 {{ email.date }}</span>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="snippet">{{ email.snippet }}</div>
+          {% if email.attachments %}
+          <div class="attachments">
+            <div class="attachments-title">附件</div>
+            <div class="attach-list">
+              {% for att in email.attachments %}
+              <div class="attach-item">
+                <span class="attach-icon">📄</span>
+                <a href="/download/{{ att.message_id }}/{{ att.attachment_id }}" title="{{ att.mime_type }}">
+                  {{ att.filename }}
+                </a>
+              </div>
+              {% endfor %}
+            </div>
+          </div>
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    {% else %}
+      <div class="empty">
+        <p>😕 找不到符合關鍵字的郵件。</p>
+      </div>
+    {% endif %}
+  </div>
+
+  <footer>由 Gmail API 提供支援 · 最多顯示 50 封</footer>
+</body>
+</html>
