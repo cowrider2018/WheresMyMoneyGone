@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>消費明細</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: "Segoe UI", "Microsoft JhengHei", sans-serif; background: #f0f4f8; color: #333; }
+    header { background: #1a73e8; color: #fff; padding: 16px 40px;
+             display: flex; align-items: center; justify-content: space-between; }
+    header h1 { font-size: 1.3rem; }
+    header a { color: #cce0ff; font-size: 0.9rem; text-decoration: none; margin-left: 16px; }
+    header a:hover { color: #fff; }
+
+    .toolbar { max-width: 1200px; margin: 24px auto 0; padding: 0 20px;
+               display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+    .stats { font-size: 0.95rem; color: #555; }
+    .stats strong { color: #1a73e8; }
+    .export-btn { background: #34a853; color: #fff; padding: 8px 20px; border-radius: 8px;
+                  font-size: 0.9rem; font-weight: 600; text-decoration: none; }
+    .export-btn:hover { background: #2a8744; }
+
+    .container { max-width: 1200px; margin: 16px auto 40px; padding: 0 20px; overflow-x: auto; }
+
+    table { width: 100%; border-collapse: collapse; background: #fff;
+            border-radius: 12px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.07); font-size: 0.88rem; }
+    thead tr { background: #1a73e8; color: #fff; }
+    thead th { padding: 12px 14px; text-align: left; white-space: nowrap; font-weight: 600; }
+    tbody tr:nth-child(even) { background: #f8f9ff; }
+    tbody tr:hover { background: #e8f0fe; }
+    tbody td { padding: 10px 14px; border-bottom: 1px solid #f0f0f0; white-space: nowrap; }
+    .amount { text-align: right; font-variant-numeric: tabular-nums; }
+    tfoot td { padding: 12px 14px; font-weight: 700; background: #e8f0fe; border-top: 2px solid #1a73e8; }
+    .total-label { text-align: right; color: #1a73e8; }
+    .total-value { color: #c62828; text-align: right; font-size: 1.05rem; }
+
+    .empty { text-align: center; padding: 60px 20px; background: #fff;
+             border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.07); }
+    .empty p { color: #888; font-size: 1.05rem; }
+
+    .filter-bar { max-width: 1200px; margin: 10px auto 0; padding: 0 20px; }
+    .filter-bar input { padding: 8px 14px; border: 1px solid #ccc; border-radius: 8px;
+                        font-size: 0.9rem; width: 260px; }
+
+    footer { text-align: center; color: #bbb; font-size: 0.8rem; padding: 20px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>💳 消費明細</h1>
+    <div>
+      <a href="/messages">← 郵件列表</a>
+      <a href="/">首頁</a>
+      <a href="/logout">登出</a>
+    </div>
+  </header>
+
+  <div class="toolbar">
+    <p class="stats">
+      共解析 <strong>{{ email_count }}</strong> 封郵件，
+      找到 <strong>{{ rows|length }}</strong> 筆交易
+    </p>
+    {% if rows %}
+    <a href="/transactions/export" class="export-btn">⬇ 匯出 CSV</a>
+    {% endif %}
+  </div>
+
+  {% if rows %}
+  <div class="filter-bar">
+    <input type="text" id="filterInput" placeholder="🔍 篩選商店、日期、卡名…" onkeyup="filterTable()"/>
+  </div>
+
+  <div class="container">
+    <table id="txTable">
+      <thead>
+        <tr>
+          {% for col in columns %}
+          <th>{{ col }}</th>
+          {% endfor %}
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td>{{ row["用卡名稱"] }}</td>
+          <td>{{ row["卡號後4碼"] }}</td>
+          <td>{{ row["主/附卡"] }}</td>
+          <td>{{ row["授權日期"] }}</td>
+          <td>{{ row["授權時間"] }}</td>
+          <td>{{ row["授權地區"] }}</td>
+          <td class="amount">{{ "{:,}".format(row["授權金額(約當臺幣)"]|int) }}</td>
+          <td>{{ row["商店名稱"] }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+      <tfoot>
+        <tr>
+          <td colspan="6" class="total-label">合計</td>
+          <td class="amount total-value">{{ "{:,}".format(total) }}</td>
+          <td></td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+  {% else %}
+  <div class="container">
+    <div class="empty">
+      <p>😕 找不到可解析的消費明細，請確認郵件格式是否符合預期。</p>
+    </div>
+  </div>
+  {% endif %}
+
+  <footer>由 Gmail API 提供支援</footer>
+
+  <script>
+    function filterTable() {
+      const query = document.getElementById("filterInput").value.toLowerCase();
+      const rows = document.querySelectorAll("#txTable tbody tr");
+      rows.forEach(row => {
+        row.style.display = row.textContent.toLowerCase().includes(query) ? "" : "none";
+      });
+    }
+  </script>
+</body>
+</html>
