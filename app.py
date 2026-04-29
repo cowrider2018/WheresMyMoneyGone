@@ -42,6 +42,7 @@ TRANSACTION_QUERY = os.environ.get("TRANSACTION_QUERY", "")
 SECURITIES_QUERY    = os.environ.get("SECURITIES_QUERY", "")
 SECURITIES_PDF_PWD  = os.environ.get("SECURITIES_PDF_PASSWORD", "")
 TRANSFER_QUERY      = os.environ.get("TRANSFER_QUERY", "")
+CHANGHWA_QUERY      = os.environ.get("CHANGHWA_QUERY", "")
 DOWNLOAD_DIR = "attachments"
 
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
@@ -98,6 +99,21 @@ def _init_db():
             email_date  TEXT,
             data_json   TEXT,
             UNIQUE(email_id, filename)
+        );
+
+        CREATE TABLE IF NOT EXISTS changhwa_deposits (
+            rowid        INTEGER PRIMARY KEY AUTOINCREMENT,
+            email_id     TEXT UNIQUE,
+            txn_datetime TEXT,
+            txn_type     TEXT,
+            txn_memo     TEXT,
+            txn_date     TEXT,
+            book_date    TEXT,
+            to_account   TEXT,
+            from_account TEXT,
+            amount       TEXT,
+            currency     TEXT,
+            email_date   TEXT
         );
 
         CREATE TABLE IF NOT EXISTS sync_log (
@@ -252,6 +268,31 @@ def _do_sync(creds):
                                         ensure_ascii=False))
                         )
 
+            # 5. 彰化銀行入帳通知
+            if CHANGHWA_QUERY:
+                results = service.users().messages().list(
+                    userId="me", q=f'subject:"{CHANGHWA_QUERY}"', maxResults=200
+                ).execute()
+                for msg_ref in results.get("messages", []):
+                    if conn.execute("SELECT 1 FROM changhwa_deposits WHERE email_id=?", (msg_ref["id"],)).fetchone():
+                        continue
+                    msg = service.users().messages().get(
+                        userId="me", id=msg_ref["id"], format="full"
+                    ).execute()
+                    headers    = {h["name"]: h["value"] for h in msg["payload"].get("headers", [])}
+                    email_date = headers.get("Date", "")
+                    rec = _parse_changhwa_html(_get_body_html(msg["payload"]), email_date)
+                    if rec:
+                        conn.execute(
+                            """INSERT OR IGNORE INTO changhwa_deposits
+                               (email_id,txn_datetime,txn_type,txn_memo,txn_date,book_date,
+                                to_account,from_account,amount,currency,email_date)
+                               VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                            (msg_ref["id"], rec["txn_datetime"], rec["txn_type"], rec["txn_memo"],
+                             rec["txn_date"], rec["book_date"], rec["to_account"],
+                             rec["from_account"], rec["amount"], rec["currency"], email_date)
+                        )
+
             conn.execute(
                 "INSERT INTO sync_log(synced_at,status,message) VALUES(?,?,?)",
                 (synced_at, "ok", "同步完成")
@@ -325,6 +366,7 @@ def clear_db():
             DELETE FROM transactions;
             DELETE FROM transfers;
             DELETE FROM securities;
+            DELETE FROM changhwa_deposits;
             DELETE FROM sync_log;
         """)
     return redirect(url_for("index"))
@@ -762,6 +804,112 @@ def transfers_export():
     return Response(
         "\ufeff" + buf.getvalue(), mimetype="text/csv",
         headers={"Content-Disposition": "attachment; filename=transfers.csv"},
+    )
+
+
+# ── 彰化銀行數位存款帳戶入帳通知解析 ──────────────────────────────
+
+_CHW_SPAN_RE = re.compile(r'<span\b[^>]*Repeater_DetailTemplate2_Label_Line_\d+[^>]*>(.*?)</span>', re.S | re.I)
+_CHW_TAG_RE  = re.compile(r'<[^>]+>')
+
+
+def _chw_text(html_frag: str) -> str:
+    """移除內部 HTML 標籤"""
+    return _CHW_TAG_RE.sub('', html_frag).strip()
+
+
+def _parse_changhwa_html(html: str, email_date: str) -> dict | None:
+    """解析彰化銀行入帳通知 HTML，回傳結構化 dict 或 None"""
+    spans = [_chw_text(m.group(1)) for m in _CHW_SPAN_RE.finditer(html)]
+    rec = {
+        "txn_datetime": "", "txn_type": "", "txn_memo": "",
+        "txn_date": "", "book_date": "",
+        "to_account": "", "from_account": "",
+        "amount": "", "currency": "",
+    }
+    for span in spans:
+        # Line 1: "2026/03/31 03:41:10 您的數位存款帳戶金額異動"
+        m = re.match(r'(\d{4}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2})\s', span)
+        if m:
+            rec["txn_datetime"] = m.group(1)
+        # Line 3: "交易資訊：轉入交易  (薪水)" or "交易資訊：轉入交易"
+        m = re.match(r'交易資訊[：:](.+)', span)
+        if m:
+            info = m.group(1).strip()
+            memo_m = re.search(r'\((.+?)\)', info)
+            rec["txn_type"] = re.sub(r'\s*\(.+?\)', '', info).strip()
+            rec["txn_memo"] = memo_m.group(1) if memo_m else ""
+        # Line 4: "交易日期： 2026/03/31"
+        m = re.match(r'交易日期[：:]\s*(\S+)', span)
+        if m:
+            rec["txn_date"] = m.group(1)
+        # Line 5: "記帳日期： 2026/03/31"
+        m = re.match(r'記帳日期[：:]\s*(\S+)', span)
+        if m:
+            rec["book_date"] = m.group(1)
+        # Line 6: "轉入帳號：xxxx"
+        m = re.match(r'轉入帳號[：:]\s*(\S+)', span)
+        if m:
+            rec["to_account"] = m.group(1)
+        # Line 7: "轉出帳號：xxxx"
+        m = re.match(r'轉出帳號[：:]\s*(\S+)', span)
+        if m:
+            rec["from_account"] = m.group(1)
+        # Line 8: "交易金額：TWD         15,994.00"
+        m = re.match(r'交易金額[：:]\s*(\S+)\s+([\d,]+\.\d+)', span)
+        if m:
+            rec["currency"] = m.group(1)
+            rec["amount"]   = m.group(2).replace(',', '')
+    # 至少需要日期或金額才算有效
+    if not rec["txn_date"] and not rec["amount"]:
+        return None
+    return rec
+
+
+@app.route("/changhwa")
+def changhwa():
+    creds = get_credentials()
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+            save_credentials(creds)
+        else:
+            return redirect(url_for("login"))
+
+    records = []
+    with _db_connect() as conn:
+        rows = conn.execute(
+            """SELECT txn_datetime, txn_type, txn_memo, txn_date, book_date,
+                      to_account, from_account, amount, currency, email_date
+               FROM changhwa_deposits ORDER BY txn_date DESC, txn_datetime DESC"""
+        ).fetchall()
+        for row in rows:
+            records.append(dict(row))
+    return render_template("changhwa.html", records=records)
+
+
+@app.route("/changhwa/export")
+def changhwa_export():
+    creds = get_credentials()
+    if not creds or not creds.valid:
+        return redirect(url_for("login"))
+
+    with _db_connect() as conn:
+        rows = conn.execute(
+            "SELECT txn_datetime,txn_type,txn_memo,txn_date,book_date,"
+            "to_account,from_account,amount,currency,email_date "
+            "FROM changhwa_deposits ORDER BY txn_date DESC, txn_datetime DESC"
+        ).fetchall()
+
+    fieldnames = ["txn_datetime","txn_type","txn_memo","txn_date","book_date",
+                  "to_account","from_account","amount","currency","email_date"]
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writeheader()
+    writer.writerows([dict(r) for r in rows])
+    return Response(
+        "\ufeff" + buf.getvalue(), mimetype="text/csv",
+        headers={"Content-Disposition": "attachment; filename=changhwa_deposits.csv"},
     )
 
 
