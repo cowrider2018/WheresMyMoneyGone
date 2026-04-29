@@ -3,198 +3,172 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Gmail 關鍵字郵件查詢工具</title>
+  <title>郵件帳務管理工具</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+TC:wght@400;600;700&display=swap" rel="stylesheet">
   <style>
+    :root {
+      --bg:       #f0ead8; --surface:  #faf6ec;
+      --green-d:  #3e5c34; --green-m:  #5b7a50;
+      --green-l:  #dde8d5; --green-vl: #eef4e8;
+      --brown-d:  #5c3e1f; --brown-m:  #7a5a30;
+      --brown-l:  #e3d5be; --brown-vl: #f5ede0;
+      --text:     #2c2014; --text-s:   #7a6a52;
+      --border:   #c8b898; --red:      #8b3a2a;
+    }
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: "Segoe UI", "Microsoft JhengHei", sans-serif; background: #f0f4f8; color: #333; }
-    header { background: #1a73e8; color: #fff; padding: 20px 40px; }
-    header h1 { font-size: 1.6rem; }
-    .container { max-width: 700px; margin: 60px auto; background: #fff; border-radius: 12px;
-      box-shadow: 0 4px 20px rgba(0,0,0,0.1); padding: 48px 40px; text-align: center; }
-    .container h2 { font-size: 1.4rem; margin-bottom: 16px; }
-    .container p { color: #666; margin-bottom: 32px; line-height: 1.7; }
-    .btn { display: inline-block; padding: 14px 36px; border-radius: 8px;
-      font-size: 1rem; font-weight: 600; text-decoration: none; cursor: pointer; border: none; }
-    .btn-primary { background: #1a73e8; color: #fff; }
-    .btn-primary:hover { background: #1558b0; }
-    .badge { display: inline-block; background: #e8f0fe; color: #1a73e8;
-      border-radius: 6px; padding: 4px 12px; font-size: 0.85rem; margin-bottom: 24px; }
-    .sync-box { margin: 24px 0; padding: 14px 20px; border-radius: 8px;
-      background: #f8f9fa; border: 1px solid #e0e0e0; font-size: 0.88rem; color: #555; text-align: left; }
-    .sync-box .label { font-weight: 600; margin-bottom: 4px; }
-    .sync-ok  { color: #34a853; }
-    .sync-err { color: #d93025; }
+    body { font-family:"Noto Serif TC","Microsoft JhengHei",serif; background:var(--bg); color:var(--text);
+      background-image:url("data:image/svg+xml,%3Csvg width='60' height='60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='%23c8b898' fill-opacity='.1'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/svg%3E"); }
 
-    /* ── 同步按鈕容器（僅包住按鈕本身）── */
-    .sync-btn-wrap {
-      position: relative;
-      display: inline-block;
-      margin-top: 10px;
-    }
-    .btn-sync {
-      background: #fbbc04; color: #333; padding: 8px 22px;
-      font-size: 0.9rem; border-radius: 6px; border: none; cursor: pointer; font-weight: 600;
-      position: relative; z-index: 0;
-    }
-    .btn-sync:hover:not(:disabled) { background: #f9a800; }
+    header { background:var(--green-d); color:#f0ead8; border-bottom:4px solid var(--brown-m); }
+    .header-inner { max-width:800px; margin:0 auto; padding:20px 0 16px; text-align:center; }
+    .header-inner h1 { font-size:1.5rem; font-weight:700; letter-spacing:.1em; }
+    .header-deco { font-size:.75rem; opacity:.6; letter-spacing:.3em; margin-top:4px; }
 
-    /* 禁用狀態：按鈕本身變灰 */
-    .btn-sync:disabled,
-    .btn-sync[data-locked="true"] {
-      background: #c9c9c9 !important;
-      color: #888 !important;
-      cursor: not-allowed !important;
+    .wrap { max-width:660px; margin:48px auto 60px; padding:0 20px; }
+    .bookplate {
+      background:var(--surface); border:1px solid var(--border); border-radius:4px;
+      box-shadow:0 2px 14px rgba(92,62,31,.12),inset 0 0 0 7px var(--brown-vl);
+      padding:40px 44px; position:relative;
     }
+    .bookplate::before,.bookplate::after { content:'✦'; position:absolute; font-size:.9rem; color:var(--brown-m); opacity:.5; }
+    .bookplate::before { top:10px; left:12px; } .bookplate::after { top:10px; right:12px; }
+    .corner-bl,.corner-br { content:'✦'; position:absolute; font-size:.9rem; color:var(--brown-m); opacity:.5; }
+    .corner-bl { bottom:10px; left:12px; } .corner-br { bottom:10px; right:12px; }
 
-    /* 遮罩：僅覆蓋按鈕本身，z-index 高於按鈕 */
-    .sync-btn-wrap .btn-overlay {
-      display: none;
-      position: absolute;
-      inset: 0;
-      border-radius: 6px;
-      background: rgba(180,180,180,0.55);
-      cursor: not-allowed;
-      z-index: 10;
-    }
-    .sync-btn-wrap.is-syncing .btn-overlay { display: block; }
-    .sync-btn-wrap.is-syncing .btn-sync {
-      background: #c9c9c9 !important;
-      color: #888 !important;
-    }
+    .plate-title { text-align:center; font-size:1.28rem; font-weight:700; color:var(--green-d); letter-spacing:.07em; margin-bottom:5px; }
+    .plate-sub   { text-align:center; font-size:.78rem; color:var(--text-s); letter-spacing:.2em; margin-bottom:26px; }
+    .divider { display:flex; align-items:center; gap:12px; margin:20px 0; color:var(--brown-m); font-size:.85rem; }
+    .divider::before,.divider::after { content:''; flex:1; height:1px; background:var(--border); }
+
+    .sync-box { background:var(--green-vl); border:1px solid #b8ccaa; border-radius:6px; padding:14px 18px; font-size:.87rem; color:var(--text-s); margin-bottom:22px; }
+    .sync-box .s-label { font-weight:700; color:var(--green-d); margin-bottom:6px; font-size:.8rem; letter-spacing:.1em; text-transform:uppercase; }
+    .sync-ok  { color:var(--green-m); font-weight:600; }
+    .sync-err { color:var(--red);     font-weight:600; }
+    .btn-row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:12px; }
+
+    .sync-btn-wrap { position:relative; display:inline-block; }
+    .btn-sync { background:var(--green-m); color:#faf6ec; padding:8px 20px; font-size:.88rem; border-radius:5px;
+      border:1px solid var(--green-d); cursor:pointer; font-weight:600; font-family:inherit; letter-spacing:.04em; transition:background .15s; }
+    .btn-sync:hover:not(:disabled) { background:var(--green-d); }
+    .btn-sync:disabled,[data-locked="true"] { background:#aab8a4!important; color:#e8e0d0!important; cursor:not-allowed!important; border-color:#8a9e84!important; }
+    .sync-btn-wrap .btn-overlay { display:none; position:absolute; inset:0; border-radius:5px; background:rgba(180,180,160,.5); cursor:not-allowed; z-index:10; }
+    .sync-btn-wrap.is-syncing .btn-overlay { display:block; }
+    .sync-btn-wrap.is-syncing .btn-sync { background:#aab8a4!important; color:#e8e0d0!important; }
+    .btn-danger { background:var(--brown-vl); color:var(--red); padding:8px 20px; font-size:.88rem; border-radius:5px;
+      border:1px solid #c8a898; cursor:pointer; font-weight:600; font-family:inherit; letter-spacing:.04em; transition:background .15s; }
+    .btn-danger:hover { background:#f0ddd3; }
+    .syncing-hint { font-size:.8rem; color:var(--text-s); margin-top:8px; font-style:italic; }
+
+    .nav-list { list-style:none; margin-top:4px; }
+    .nav-list li { border-bottom:1px solid var(--brown-l); }
+    .nav-list li:last-child { border-bottom:none; }
+    .nav-list a { display:flex; align-items:center; gap:12px; padding:13px 6px; color:var(--text);
+      text-decoration:none; font-size:.96rem; letter-spacing:.03em; transition:background .15s,padding-left .15s; border-radius:4px; }
+    .nav-list a:hover { background:var(--brown-vl); padding-left:16px; }
+    .nav-list .icon { width:28px; text-align:center; font-size:1.1rem; }
+    .nav-list .arrow { margin-left:auto; color:var(--border); font-size:.85rem; }
+    .logout-link { display:block; text-align:center; margin-top:24px; font-size:.82rem; color:var(--text-s); text-decoration:none; }
+    .logout-link:hover { color:var(--red); }
+
+    .login-badge { display:inline-block; background:var(--green-vl); color:var(--green-d); border:1px solid #b8ccaa;
+      border-radius:20px; padding:3px 14px; font-size:.8rem; letter-spacing:.08em; margin-bottom:18px; }
+    .login-desc { color:var(--text-s); font-size:.93rem; line-height:1.9; margin-bottom:26px; }
+    .btn-login { display:inline-block; background:var(--green-d); color:#faf6ec; padding:13px 36px; border-radius:6px;
+      font-size:1rem; font-weight:700; text-decoration:none; letter-spacing:.06em; border:1px solid var(--brown-m); transition:background .15s; }
+    .btn-login:hover { background:var(--brown-d); }
   </style>
 </head>
 <body>
-  <header><h1>📧 Gmail 關鍵字郵件查詢工具</h1></header>
-  <div class="container">
-    {% if authenticated %}
-      <h2>已登入 Google 帳號</h2>
-      <p>點擊下方按鈕，查詢所有符合關鍵字的 Gmail 郵件與附件。</p>
+  <header>
+    <div class="header-inner">
+      <div class="header-deco">✦ &nbsp; Mail &nbsp; Ledger &nbsp; ✦</div>
+      <h1>郵件帳務管理工具</h1>
+    </div>
+  </header>
 
-      <div class="sync-box">
-        <div class="label">📦 資料庫同步狀態</div>
-        <div id="sync-status-text">
-          {% if last_sync %}
-            <div class="{% if last_sync.status == 'ok' %}sync-ok{% else %}sync-err{% endif %}">
-              {{ last_sync.synced_at }} &nbsp;│&nbsp; {{ last_sync.message }}
-            </div>
-          {% else %}
-            <div>尚未同步，請點選「立即同步」</div>
-          {% endif %}
-        </div>
+  <div class="wrap">
+    <div class="bookplate">
+      <span class="corner-bl">✦</span><span class="corner-br">✦</span>
 
-        <div style="margin-top:10px; display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
-          <!-- 同步按鈕 -->
-          <div class="sync-btn-wrap {% if is_syncing %}is-syncing{% endif %}" id="sync-wrap">
-            <button class="btn-sync" id="sync-btn"
-                    {% if is_syncing %}disabled data-locked="true"{% endif %}
-                    onclick="startSync(event)">
-              🔄 立即同步
-            </button>
-            <div class="btn-overlay"></div>
+      {% if authenticated %}
+        <div class="plate-title">帳務總覽</div>
+        <div class="plate-sub">GMAIL &nbsp;·&nbsp; SQLITE &nbsp;·&nbsp; 財務摘要</div>
+
+        <div class="sync-box">
+          <div class="s-label">❧ 資料庫同步狀態</div>
+          <div id="sync-status-text">
+            {% if last_sync %}
+              <span class="{% if last_sync.status == 'ok' %}sync-ok{% else %}sync-err{% endif %}">
+                {{ last_sync.synced_at }} &nbsp;│&nbsp; {{ last_sync.message }}
+              </span>
+            {% else %}<span>尚未同步，請點選「更新資料」</span>{% endif %}
           </div>
-
-          <!-- 清除按鈕（一般 form，不受 sync 影響）-->
-          <form method="post" action="/clear-db" style="display:inline;"
-                onsubmit="return confirm('確定要清除所有資料庫資料嗎？此操作無法復原！');">
-            <button type="submit" class="btn-sync"
-                    style="background:#d93025;color:#fff;">🗑️ 清除所有資料</button>
-          </form>
+          <div class="btn-row">
+            <div class="sync-btn-wrap {% if is_syncing %}is-syncing{% endif %}" id="sync-wrap">
+              <button class="btn-sync" id="sync-btn"
+                      {% if is_syncing %}disabled data-locked="true"{% endif %}
+                      onclick="startSync(event)">❧ 更新資料</button>
+              <div class="btn-overlay"></div>
+            </div>
+            <form method="post" action="/clear-db" style="margin:0;"
+                  onsubmit="return confirm('確定清除所有資料庫資料？此操作無法復原！');">
+              <button type="submit" class="btn-danger">✕ 清除所有資料</button>
+            </form>
+          </div>
+          {% if is_syncing %}<div class="syncing-hint">⏳ 正在從 Gmail 抓取資料，請稍候…</div>{% endif %}
+          <div id="syncing-hint" class="syncing-hint" style="display:none;">⏳ 正在從 Gmail 抓取資料，請稍候…</div>
         </div>
 
-        {% if is_syncing %}
-          <div style="margin-top:8px;font-size:0.82rem;color:#888;">⏳ 正在從 Gmail 抓取資料，請稍候…</div>
-        {% endif %}
-        <div id="syncing-hint" style="margin-top:8px;font-size:0.82rem;color:#888;display:none;">
-          ⏳ 正在從 Gmail 抓取資料，請稍候…
-        </div>
-      </div>
+        <div class="divider">❦ 功能列表 ❦</div>
 
-      <a href="/messages" class="btn btn-primary">🔍 查詢郵件</a>
-      <br/><br/>
-      <a href="/transactions" class="btn" style="background:#34a853;color:#fff;">💳 消費明細解析</a>
-      <br/><br/>
-      <a href="/transfers" class="btn" style="background:#1565c0;color:#fff;">🏦 台幣轉帳通知彙整</a>
-      <br/><br/>
-      <a href="/securities" class="btn" style="background:#0b6e4f;color:#fff;">📈 有價證券對帳單解析</a>
-      <br/><br/>
-      <a href="/logout" style="color:#999; font-size:0.85rem;">登出</a>
-    {% else %}
-      <span class="badge">需要 Google 帳號授權</span>
-      <h2>請先登入 Google 帳號</h2>
-      <p>本工具將透過 Gmail API 搜尋您帳號中<br/>所有符合關鍵字的郵件與附件。</p>
-      <a href="/login" class="btn btn-primary">🔐 使用 Google 帳號登入</a>
-    {% endif %}
+        <ul class="nav-list">
+          <li><a href="/messages"><span class="icon">📜</span><span>郵件查詢</span><span class="arrow">›</span></a></li>
+          <li><a href="/transactions"><span class="icon">💳</span><span>消費明細解析</span><span class="arrow">›</span></a></li>
+          <li><a href="/transfers"><span class="icon">🏦</span><span>台幣轉帳通知彙整</span><span class="arrow">›</span></a></li>
+          <li><a href="/securities"><span class="icon">📈</span><span>有價證券對帳單解析</span><span class="arrow">›</span></a></li>
+        </ul>
+        <a href="/logout" class="logout-link">登出帳號</a>
+
+      {% else %}
+        <div class="plate-title">郵件帳務管理工具</div>
+        <div class="plate-sub">MAIL &nbsp;·&nbsp; LEDGER &nbsp;·&nbsp; SYSTEM</div>
+        <div class="divider">❧</div>
+        <div style="text-align:center;">
+          <span class="login-badge">需要 Google 帳號授權</span>
+          <p class="login-desc">本工具透過 Gmail API 自動彙整<br/>信用卡明細、轉帳通知及有價證券對帳單。</p>
+          <a href="/login" class="btn-login">🔐 &nbsp; 使用 Google 帳號登入</a>
+        </div>
+      {% endif %}
+    </div>
   </div>
 
   {% if authenticated %}
   <script>
-    const syncBtn  = document.getElementById('sync-btn');
-    const syncWrap = document.getElementById('sync-wrap');
-    const hint     = document.getElementById('syncing-hint');
-    let pollTimer  = null;
-
-    function setSyncing(on) {
-      if (on) {
-        // 雙重鎖定：CSS class + disabled + data-locked
-        syncWrap.classList.add('is-syncing');
-        syncBtn.disabled = true;
-        syncBtn.setAttribute('data-locked', 'true');
-        hint.style.display = 'block';
-      } else {
-        syncWrap.classList.remove('is-syncing');
-        syncBtn.disabled = false;
-        syncBtn.removeAttribute('data-locked');
-        hint.style.display = 'none';
-      }
+    const syncBtn=document.getElementById('sync-btn'),syncWrap=document.getElementById('sync-wrap'),hint=document.getElementById('syncing-hint');
+    let pollTimer=null;
+    function setSyncing(on){
+      if(on){syncWrap.classList.add('is-syncing');syncBtn.disabled=true;syncBtn.setAttribute('data-locked','true');hint.style.display='block';}
+      else{syncWrap.classList.remove('is-syncing');syncBtn.disabled=false;syncBtn.removeAttribute('data-locked');hint.style.display='none';}
     }
-
-    // 防止 F12 刪除遮罩後點擊 — 按鈕本身也攔截
-    function startSync(e) {
+    function startSync(e){
       e.preventDefault();
-      // 雙重防護：即使遮罩被刪除，也檢查 data-locked
-      if (syncBtn.disabled || syncBtn.getAttribute('data-locked') === 'true') return;
-
+      if(syncBtn.disabled||syncBtn.getAttribute('data-locked')==='true')return;
       setSyncing(true);
-
-      fetch('/sync', { method: 'POST' })
-        .then(r => r.json())
-        .then(data => {
-          if (data.ok || data.error === 'already_syncing') {
-            startPolling();
-          } else {
-            setSyncing(false);
-            alert('同步啟動失敗：' + (data.error || '未知錯誤'));
-          }
-        })
-        .catch(() => {
-          setSyncing(false);
-          alert('無法連線到伺服器');
-        });
+      fetch('/sync',{method:'POST'}).then(r=>r.json()).then(data=>{
+        if(data.ok||data.error==='already_syncing'){startPolling();}
+        else{setSyncing(false);alert('同步啟動失敗：'+(data.error||'未知錯誤'));}
+      }).catch(()=>{setSyncing(false);alert('無法連線到伺服器');});
     }
-
-    function startPolling() {
-      if (pollTimer) return;
-      pollTimer = setInterval(() => {
-        fetch('/sync/status')
-          .then(r => r.json())
-          .then(data => {
-            if (!data.syncing) {
-              clearInterval(pollTimer);
-              pollTimer = null;
-              setSyncing(false);
-              // 重新整理同步狀態文字
-              location.reload();
-            }
-          })
-          .catch(() => {});
-      }, 1500);
+    function startPolling(){
+      if(pollTimer)return;
+      pollTimer=setInterval(()=>{
+        fetch('/sync/status').then(r=>r.json()).then(data=>{
+          if(!data.syncing){clearInterval(pollTimer);pollTimer=null;setSyncing(false);location.reload();}
+        }).catch(()=>{});
+      },1500);
     }
-
-    // 頁面載入時：若後端仍在同步，立即鎖定並開始輪詢
-    {% if is_syncing %}
-    setSyncing(true);
-    startPolling();
-    {% endif %}
+    {% if is_syncing %}setSyncing(true);startPolling();{% endif %}
   </script>
   {% endif %}
 </body>

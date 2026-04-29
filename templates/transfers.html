@@ -2,132 +2,79 @@
 <html lang="zh-TW">
 <head>
   <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>台幣轉帳通知彙整</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>台幣轉帳通知</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+TC:wght@400;600;700&display=swap" rel="stylesheet">
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: "Segoe UI", "Microsoft JhengHei", sans-serif; background: #f0f4f8; color: #333; }
-    header { background: #1565c0; color: #fff; padding: 16px 40px;
-             display: flex; align-items: center; justify-content: space-between; }
-    header h1 { font-size: 1.3rem; }
-    header a { color: #bbdefb; font-size: 0.9rem; text-decoration: none; margin-left: 16px; }
-    header a:hover { color: #fff; }
-
-    .toolbar { max-width: 1200px; margin: 24px auto 0; padding: 0 20px;
-               display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
-    .stats { font-size: 0.95rem; color: #555; }
-    .stats strong { color: #1565c0; }
-    .export-btn { background: #1565c0; color: #fff; padding: 8px 20px; border-radius: 8px;
-                  font-size: 0.9rem; font-weight: 600; text-decoration: none; }
-    .export-btn:hover { background: #0d47a1; }
-
-    .filter-bar { max-width: 1200px; margin: 12px auto 0; padding: 0 20px; }
-    .filter-bar input { padding: 8px 14px; border: 1px solid #ccc; border-radius: 8px;
-                        font-size: 0.9rem; width: 280px; }
-
-    .container { max-width: 1200px; margin: 14px auto 40px; padding: 0 20px; overflow-x: auto; }
-
-    table { width: 100%; border-collapse: collapse; background: #fff;
-            border-radius: 12px; overflow: hidden;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.07); font-size: 0.87rem; }
-    thead tr { background: #1565c0; color: #fff; }
-    thead th { padding: 11px 14px; text-align: left; white-space: nowrap; font-weight: 600; }
-    thead th.num { text-align: right; }
-    tbody tr:nth-child(even) { background: #f4f8ff; }
-    tbody tr:hover { background: #dce8ff; }
-    tbody td { padding: 9px 14px; border-bottom: 1px solid #f0f0f0; white-space: nowrap; }
-    tbody td.num { text-align: right; font-variant-numeric: tabular-nums; }
-    tfoot td { padding: 11px 14px; font-weight: 700; background: #e3f2fd;
-               border-top: 2px solid #1565c0; }
-    tfoot td.num { text-align: right; color: #c62828; font-size: 1.05rem; }
-
-    .empty { text-align: center; padding: 60px 20px; background: #fff;
-             border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,0.07); color: #888; }
-    footer { text-align: center; color: #bbb; font-size: 0.8rem; padding: 20px; }
+    :root{--bg:#f0ead8;--surface:#faf6ec;--green-d:#3e5c34;--green-m:#5b7a50;--green-l:#dde8d5;--green-vl:#eef4e8;--brown-d:#5c3e1f;--brown-m:#7a5a30;--brown-l:#e3d5be;--brown-vl:#f5ede0;--text:#2c2014;--text-s:#7a6a52;--border:#c8b898;--red:#8b3a2a;}
+    *{box-sizing:border-box;margin:0;padding:0;}
+    body{font-family:"Noto Serif TC","Microsoft JhengHei",serif;background:var(--bg);color:var(--text);}
+    header{background:var(--green-d);color:#f0ead8;border-bottom:4px solid var(--brown-m);}
+    .header-inner{max-width:1100px;margin:0 auto;padding:16px 24px;display:flex;align-items:center;gap:16px;}
+    .header-inner h1{font-size:1.15rem;font-weight:700;letter-spacing:.08em;}
+    .back-link{color:#d4e8ca;text-decoration:none;font-size:.9rem;} .back-link:hover{color:#fff;}
+    .toolbar{max-width:1100px;margin:28px auto 16px;padding:0 20px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;}
+    .filter-input{background:var(--surface);border:1px solid var(--border);border-radius:5px;padding:8px 14px;font-size:.88rem;font-family:inherit;color:var(--text);flex:1;min-width:180px;}
+    .filter-input:focus{outline:none;border-color:var(--green-m);}
+    .btn-export{background:var(--brown-m);color:#faf6ec;padding:8px 18px;border-radius:5px;border:1px solid var(--brown-d);text-decoration:none;font-size:.85rem;font-weight:600;letter-spacing:.04em;white-space:nowrap;}
+    .btn-export:hover{background:var(--brown-d);}
+    .count-badge{background:var(--green-vl);color:var(--green-d);border:1px solid #b8ccaa;border-radius:20px;padding:2px 12px;font-size:.8rem;white-space:nowrap;}
+    .total-badge{background:var(--brown-vl);color:var(--brown-d);border:1px solid var(--brown-l);border-radius:20px;padding:2px 14px;font-size:.8rem;font-weight:700;white-space:nowrap;}
+    .wrap{max-width:1100px;margin:0 auto 60px;padding:0 20px;overflow-x:auto;}
+    table{width:100%;border-collapse:collapse;background:var(--surface);border:1px solid var(--border);border-radius:6px;overflow:hidden;font-size:.86rem;}
+    thead tr{background:var(--green-d);color:#f0ead8;}
+    thead th{padding:11px 14px;text-align:left;font-weight:600;letter-spacing:.05em;}
+    tbody tr{border-bottom:1px solid var(--brown-l);}
+    tbody tr:last-child{border-bottom:none;}
+    tbody tr:nth-child(even){background:var(--brown-vl);}
+    tbody tr:hover{background:var(--green-vl);}
+    td{padding:10px 14px;color:var(--text);vertical-align:top;}
+    td.amount{font-weight:600;color:var(--red);text-align:right;}
+    .empty{text-align:center;color:var(--text-s);font-style:italic;padding:60px 0;}
   </style>
 </head>
 <body>
-  <header>
-    <h1>🏦 台幣轉帳通知彙整</h1>
-    <div>
-      <a href="/">首頁</a>
-      <a href="/logout">登出</a>
-    </div>
-  </header>
-
+  <header><div class="header-inner"><a href="/" class="back-link">← 返回</a><h1>❧ 台幣轉帳通知彙整</h1></div></header>
   <div class="toolbar">
-    <p class="stats">
-      共 <strong>{{ records|length }}</strong> 筆轉帳紀錄
-      &nbsp;｜&nbsp;
-      合計金額 <strong>{{ "{:,}".format(total_out) }}</strong> 元
-    </p>
+    <input class="filter-input" id="filterInput" type="text" placeholder="篩選關鍵字…" oninput="filterTable()"/>
+    <span class="count-badge" id="row-count">共 {{ records|length }} 筆</span>
+    <span class="total-badge">合計出帳 {{ total_out }} 元</span>
+    <a href="/transfers/export" class="btn-export">↓ 匯出 CSV</a>
+  </div>
+  <div class="wrap">
     {% if records %}
-    <a href="/transfers/export" class="export-btn">⬇ 匯出 CSV</a>
-    {% endif %}
-  </div>
-
-  {% if records %}
-  <div class="filter-bar">
-    <input type="text" id="filterInput" placeholder="🔍 篩選帳號、戶名、時間…" onkeyup="filterTable()"/>
-  </div>
-
-  <div class="container">
-    <table id="txTable">
-      <thead>
-        <tr>
-          <th>交易時間</th>
-          <th class="num">交易金額</th>
-          <th class="num">手續費</th>
-          <th>轉出銀行</th>
-          <th>轉出帳號</th>
-          <th>轉入銀行</th>
-          <th>轉入帳號</th>
-          <th>收款戶名</th>
-          <th>轉出帳戶存摺摘要</th>
-          <th>轉入帳戶存摺摘要</th>
-          <th>交易說明</th>
-        </tr>
-      </thead>
+    <table id="data-table">
+      <thead><tr>
+        <th>交易時間</th><th>交易金額</th><th>手續費</th>
+        <th>轉出帳號</th><th>轉入帳號</th><th>收款戶名</th>
+        <th>轉出摘要</th><th>轉入摘要</th><th>交易說明</th>
+      </tr></thead>
       <tbody>
         {% for r in records %}
         <tr>
-          <td>{{ r.get("交易時間", "") }}</td>
-          <td class="num">{{ "{:,}".format(r["交易金額"]|int) if r.get("交易金額","").lstrip("-+").isdigit() else r.get("交易金額","") }}</td>
-          <td class="num">{{ r.get("手續費", "") }}</td>
-          <td>{{ r.get("轉出銀行", "") }}</td>
-          <td>{{ r.get("轉出帳號", "") }}</td>
-          <td>{{ r.get("轉入銀行", "") }}</td>
-          <td>{{ r.get("轉入帳號", "") }}</td>
-          <td>{{ r.get("收款戶名", "") }}</td>
-          <td>{{ r.get("轉出帳戶存摺摘要", "") }}</td>
-          <td>{{ r.get("轉入帳戶存摺摘要", "") }}</td>
-          <td>{{ r.get("交易說明", "") }}</td>
+          <td>{{ r.get('交易時間','') }}</td>
+          <td class="amount">{{ r.get('交易金額','') }}</td>
+          <td>{{ r.get('手續費','') }}</td>
+          <td>{{ r.get('轉出帳號','') }}</td>
+          <td>{{ r.get('轉入帳號','') }}</td>
+          <td>{{ r.get('收款戶名','') }}</td>
+          <td>{{ r.get('轉出帳戶存摺摘要','') }}</td>
+          <td>{{ r.get('轉入帳戶存摺摘要','') }}</td>
+          <td>{{ r.get('交易說明','') }}</td>
         </tr>
         {% endfor %}
       </tbody>
-      <tfoot>
-        <tr>
-          <td colspan="1">合計</td>
-          <td class="num">{{ "{:,}".format(total_out) }}</td>
-          <td colspan="9"></td>
-        </tr>
-      </tfoot>
     </table>
+    {% else %}<div class="empty">目前沒有轉帳通知，請先同步。</div>{% endif %}
   </div>
-  {% else %}
-    <div class="container">
-      <div class="empty">😕 找不到符合條件的轉帳通知郵件。</div>
-    </div>
-  {% endif %}
-
-  <footer>由 Gmail API 提供支援</footer>
-
   <script>
-    function filterTable() {
-      const q = document.getElementById("filterInput").value.toLowerCase();
-      document.querySelectorAll("#txTable tbody tr").forEach(row => {
-        row.style.display = row.textContent.toLowerCase().includes(q) ? "" : "none";
-      });
+    function filterTable(){
+      const q=document.getElementById('filterInput').value.toLowerCase();
+      const rows=document.querySelectorAll('#data-table tbody tr');
+      let n=0;
+      rows.forEach(r=>{const show=r.textContent.toLowerCase().includes(q);r.style.display=show?'':'none';if(show)n++;});
+      document.getElementById('row-count').textContent='共 '+n+' 筆';
     }
   </script>
 </body>
