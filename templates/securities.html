@@ -42,6 +42,12 @@
     .note-item .nk{color:var(--text-s);font-size:.74rem;margin-bottom:2px;}
     .note-item .nv{font-weight:700;color:var(--green-d);}
     .empty{text-align:center;color:var(--text-s);font-style:italic;padding:60px 0;}
+    .total-badge{border-radius:20px;padding:2px 14px;font-size:.8rem;font-weight:700;white-space:nowrap;border-width:1px;border-style:solid;}
+    .total-pos{background:var(--green-vl);color:var(--green-d);border-color:#b8ccaa;}
+    .total-neg{background:#fbe8e8;color:var(--red);border-color:#e8b8b8;}
+    .pnl-badge{display:inline-block;border-radius:12px;padding:2px 12px;font-size:.78rem;font-weight:700;border-width:1px;border-style:solid;}
+    .pnl-badge.pos{background:var(--green-vl);color:var(--green-d);border-color:#b8ccaa;}
+    .pnl-badge.neg{background:#fbe8e8;color:var(--red);border-color:#e8b8b8;}
   </style>
 </head>
 <body>
@@ -49,6 +55,9 @@
   <div class="toolbar">
     <input class="filter-input" id="filterInput" type="text" placeholder="篩選關鍵字…" oninput="filterCards()"/>
     <span class="count-badge" id="card-count">共 {{ reports|length }} 份</span>
+    <span class="total-badge {% if sec_total_pnl >= 0 %}total-pos{% else %}total-neg{% endif %}">
+      整體淨損益：{% if sec_total_pnl >= 0 %}＋{% else %}－{% endif %}{{ "{:,.0f}".format(sec_total_pnl | abs) }} 元
+    </span>
     <a href="/securities/export" class="btn-export">↓ 匯出 CSV</a>
   </div>
   <div class="wrap">
@@ -58,6 +67,9 @@
         <div class="report-head">
           <span class="r-title">📋 {{ r.filename }}</span>
           <span class="r-date">{{ r.email_date }}</span>
+          <span class="pnl-badge {% if r.my_pnl >= 0 %}pos{% else %}neg{% endif %}">
+            我的損益：{% if r.my_pnl >= 0 %}＋{% else %}－{% endif %}{{ "{:,.0f}".format(r.my_pnl | abs) }} 元
+          </span>
         </div>
 
         {% if r.transactions %}

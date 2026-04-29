@@ -39,9 +39,7 @@
   <div class="toolbar">
     <input class="filter-input" id="filterInput" type="text" placeholder="篩選關鍵字…" oninput="filterTable()"/>
     <span class="count-badge" id="row-count">共 {{ records|length }} 筆</span>
-    {% set total = namespace(val=0) %}
-    {% for r in records %}{% set total.val = total.val + (r.amount | float) %}{% endfor %}
-    <span class="total-badge">合計入帳 {{ "%.2f"|format(total.val) }} 元</span>
+    <span class="total-badge">合計入帳 {{ "%.2f"|format(total_in) }} 元</span>
     <a href="/changhwa/export" class="btn-export">↓ 匯出 CSV</a>
   </div>
   <div class="wrap">

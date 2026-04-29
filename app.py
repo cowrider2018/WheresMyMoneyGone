@@ -312,14 +312,45 @@ def index():
     creds = get_credentials()
     authenticated = bool(creds and creds.valid)
     last_sync = None
+    summary = None
     with _db_connect() as conn:
         row = conn.execute(
             "SELECT synced_at, status, message FROM sync_log ORDER BY rowid DESC LIMIT 1"
         ).fetchone()
         if row:
             last_sync = dict(row)
+        if authenticated:
+            # 消費支出
+            r = conn.execute("SELECT SUM(CAST(amount AS REAL)) FROM transactions").fetchone()
+            total_expense = float(r[0] or 0)
+            # 台幣轉帳
+            rows = conn.execute("SELECT data_json FROM transfers").fetchall()
+            total_transfer = sum(
+                float(json.loads(r["data_json"]).get("交易金額", 0) or 0)
+                for r in rows
+            )
+            # 彰化銀行入帳
+            r = conn.execute("SELECT SUM(CAST(amount AS REAL)) FROM changhwa_deposits").fetchone()
+            total_changhwa = float(r[0] or 0)
+            # 有價證券（我的淨損益 = -本公司淨收付總計，付的是我+，收的是我-）
+            sec_rows = conn.execute("SELECT data_json FROM securities").fetchall()
+            sec_pnl = 0.0
+            for sr in sec_rows:
+                data = json.loads(sr["data_json"])
+                val_str = data.get("totals", {}).get("總計本公司淨收+/本公司淨付-", "0") or "0"
+                try:
+                    sec_pnl += -float(val_str.replace(",", ""))
+                except ValueError:
+                    pass
+            summary = {
+                "expense":   total_expense,
+                "transfer":  total_transfer,
+                "changhwa":  total_changhwa,
+                "sec_pnl":   sec_pnl,
+                "net":       -total_expense - total_transfer + total_changhwa + sec_pnl,
+            }
     return render_template("index.html", authenticated=authenticated, last_sync=last_sync,
-                           is_syncing=_is_syncing)
+                           is_syncing=_is_syncing, summary=summary)
 
 
 @app.route("/sync", methods=["POST"])
@@ -885,7 +916,8 @@ def changhwa():
         ).fetchall()
         for row in rows:
             records.append(dict(row))
-    return render_template("changhwa.html", records=records)
+    total_in = sum(float(r["amount"] or 0) for r in records)
+    return render_template("changhwa.html", records=records, total_in=total_in)
 
 
 @app.route("/changhwa/export")
@@ -1144,6 +1176,7 @@ def securities():
             return redirect(url_for("login"))
 
     reports = []
+    sec_total_pnl = 0.0
     with _db_connect() as conn:
         rows = conn.execute(
             "SELECT subject, filename, email_date, data_json FROM securities ORDER BY email_date DESC"
@@ -1153,10 +1186,19 @@ def securities():
             data["subject"]    = row["subject"]
             data["filename"]   = row["filename"]
             data["email_date"] = row["email_date"]
+            # 付的是我+（本公司淨付），收的是我-（本公司淨收） → my_pnl = -value
+            val_str = data.get("totals", {}).get("總計本公司淨收+/本公司淨付-", "0") or "0"
+            try:
+                my_pnl = -float(val_str.replace(",", ""))
+            except ValueError:
+                my_pnl = 0.0
+            data["my_pnl"] = my_pnl
+            sec_total_pnl += my_pnl
             reports.append(data)
 
     return render_template(
-        "securities.html", reports=reports, tx_cols=SEC_TX_COLS, total_cols=SEC_TOTAL_COLS
+        "securities.html", reports=reports, tx_cols=SEC_TX_COLS,
+        total_cols=SEC_TOTAL_COLS, sec_total_pnl=sec_total_pnl
     )
 
 
