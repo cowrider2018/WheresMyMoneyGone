@@ -19,6 +19,48 @@
     .btn-primary:hover { background: #1558b0; }
     .badge { display: inline-block; background: #e8f0fe; color: #1a73e8;
       border-radius: 6px; padding: 4px 12px; font-size: 0.85rem; margin-bottom: 24px; }
+    .sync-box { margin: 24px 0; padding: 14px 20px; border-radius: 8px;
+      background: #f8f9fa; border: 1px solid #e0e0e0; font-size: 0.88rem; color: #555; text-align: left; }
+    .sync-box .label { font-weight: 600; margin-bottom: 4px; }
+    .sync-ok  { color: #34a853; }
+    .sync-err { color: #d93025; }
+
+    /* ── 同步按鈕容器（僅包住按鈕本身）── */
+    .sync-btn-wrap {
+      position: relative;
+      display: inline-block;
+      margin-top: 10px;
+    }
+    .btn-sync {
+      background: #fbbc04; color: #333; padding: 8px 22px;
+      font-size: 0.9rem; border-radius: 6px; border: none; cursor: pointer; font-weight: 600;
+      position: relative; z-index: 0;
+    }
+    .btn-sync:hover:not(:disabled) { background: #f9a800; }
+
+    /* 禁用狀態：按鈕本身變灰 */
+    .btn-sync:disabled,
+    .btn-sync[data-locked="true"] {
+      background: #c9c9c9 !important;
+      color: #888 !important;
+      cursor: not-allowed !important;
+    }
+
+    /* 遮罩：僅覆蓋按鈕本身，z-index 高於按鈕 */
+    .sync-btn-wrap .btn-overlay {
+      display: none;
+      position: absolute;
+      inset: 0;
+      border-radius: 6px;
+      background: rgba(180,180,180,0.55);
+      cursor: not-allowed;
+      z-index: 10;
+    }
+    .sync-btn-wrap.is-syncing .btn-overlay { display: block; }
+    .sync-btn-wrap.is-syncing .btn-sync {
+      background: #c9c9c9 !important;
+      color: #888 !important;
+    }
   </style>
 </head>
 <body>
@@ -27,7 +69,47 @@
     {% if authenticated %}
       <h2>已登入 Google 帳號</h2>
       <p>點擊下方按鈕，查詢所有符合關鍵字的 Gmail 郵件與附件。</p>
-      <a href="/messages" class="btn btn-primary">🔍 開始查詢郵件</a>
+
+      <div class="sync-box">
+        <div class="label">📦 資料庫同步狀態</div>
+        <div id="sync-status-text">
+          {% if last_sync %}
+            <div class="{% if last_sync.status == 'ok' %}sync-ok{% else %}sync-err{% endif %}">
+              {{ last_sync.synced_at }} &nbsp;│&nbsp; {{ last_sync.message }}
+            </div>
+          {% else %}
+            <div>尚未同步，請點選「立即同步」</div>
+          {% endif %}
+        </div>
+
+        <div style="margin-top:10px; display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+          <!-- 同步按鈕 -->
+          <div class="sync-btn-wrap {% if is_syncing %}is-syncing{% endif %}" id="sync-wrap">
+            <button class="btn-sync" id="sync-btn"
+                    {% if is_syncing %}disabled data-locked="true"{% endif %}
+                    onclick="startSync(event)">
+              🔄 立即同步
+            </button>
+            <div class="btn-overlay"></div>
+          </div>
+
+          <!-- 清除按鈕（一般 form，不受 sync 影響）-->
+          <form method="post" action="/clear-db" style="display:inline;"
+                onsubmit="return confirm('確定要清除所有資料庫資料嗎？此操作無法復原！');">
+            <button type="submit" class="btn-sync"
+                    style="background:#d93025;color:#fff;">🗑️ 清除所有資料</button>
+          </form>
+        </div>
+
+        {% if is_syncing %}
+          <div style="margin-top:8px;font-size:0.82rem;color:#888;">⏳ 正在從 Gmail 抓取資料，請稍候…</div>
+        {% endif %}
+        <div id="syncing-hint" style="margin-top:8px;font-size:0.82rem;color:#888;display:none;">
+          ⏳ 正在從 Gmail 抓取資料，請稍候…
+        </div>
+      </div>
+
+      <a href="/messages" class="btn btn-primary">🔍 查詢郵件</a>
       <br/><br/>
       <a href="/transactions" class="btn" style="background:#34a853;color:#fff;">💳 消費明細解析</a>
       <br/><br/>
@@ -43,5 +125,77 @@
       <a href="/login" class="btn btn-primary">🔐 使用 Google 帳號登入</a>
     {% endif %}
   </div>
+
+  {% if authenticated %}
+  <script>
+    const syncBtn  = document.getElementById('sync-btn');
+    const syncWrap = document.getElementById('sync-wrap');
+    const hint     = document.getElementById('syncing-hint');
+    let pollTimer  = null;
+
+    function setSyncing(on) {
+      if (on) {
+        // 雙重鎖定：CSS class + disabled + data-locked
+        syncWrap.classList.add('is-syncing');
+        syncBtn.disabled = true;
+        syncBtn.setAttribute('data-locked', 'true');
+        hint.style.display = 'block';
+      } else {
+        syncWrap.classList.remove('is-syncing');
+        syncBtn.disabled = false;
+        syncBtn.removeAttribute('data-locked');
+        hint.style.display = 'none';
+      }
+    }
+
+    // 防止 F12 刪除遮罩後點擊 — 按鈕本身也攔截
+    function startSync(e) {
+      e.preventDefault();
+      // 雙重防護：即使遮罩被刪除，也檢查 data-locked
+      if (syncBtn.disabled || syncBtn.getAttribute('data-locked') === 'true') return;
+
+      setSyncing(true);
+
+      fetch('/sync', { method: 'POST' })
+        .then(r => r.json())
+        .then(data => {
+          if (data.ok || data.error === 'already_syncing') {
+            startPolling();
+          } else {
+            setSyncing(false);
+            alert('同步啟動失敗：' + (data.error || '未知錯誤'));
+          }
+        })
+        .catch(() => {
+          setSyncing(false);
+          alert('無法連線到伺服器');
+        });
+    }
+
+    function startPolling() {
+      if (pollTimer) return;
+      pollTimer = setInterval(() => {
+        fetch('/sync/status')
+          .then(r => r.json())
+          .then(data => {
+            if (!data.syncing) {
+              clearInterval(pollTimer);
+              pollTimer = null;
+              setSyncing(false);
+              // 重新整理同步狀態文字
+              location.reload();
+            }
+          })
+          .catch(() => {});
+      }, 1500);
+    }
+
+    // 頁面載入時：若後端仍在同步，立即鎖定並開始輪詢
+    {% if is_syncing %}
+    setSyncing(true);
+    startPolling();
+    {% endif %}
+  </script>
+  {% endif %}
 </body>
 </html>

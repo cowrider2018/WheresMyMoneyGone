@@ -45,3 +45,5 @@ htmlcov/
 # === Windows ===
 Thumbs.db
 desktop.ini
+
+*.db

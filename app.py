@@ -1,9 +1,13 @@
 import os
 import re
+import json
 import base64
 import hashlib
 import secrets
+import sqlite3
 import mimetypes
+import threading
+from datetime import datetime
 from urllib.parse import quote, unquote
 from flask import Flask, redirect, request, session, url_for, render_template, send_file, Response
 from google_auth_oauthlib.flow import Flow
@@ -24,6 +28,9 @@ app.secret_key = os.urandom(24)
 os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
 
 CLIENT_SECRETS_FILE = "credentials.json"
+TOKEN_FILE          = "token.json"   # 持久化 OAuth token
+DB_FILE             = "wmmg.db"
+
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
 ]
@@ -40,30 +47,287 @@ DOWNLOAD_DIR = "attachments"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 
+# ── 資料庫初始化 ─────────────────────────────────────────────────────────
+
+def _db_connect():
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def _init_db():
+    with _db_connect() as conn:
+        conn.executescript("""
+        CREATE TABLE IF NOT EXISTS messages (
+            id          TEXT PRIMARY KEY,
+            subject     TEXT,
+            sender      TEXT,
+            date        TEXT,
+            snippet     TEXT,
+            attachments TEXT,
+            synced_at   TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS transactions (
+            rowid       INTEGER PRIMARY KEY AUTOINCREMENT,
+            email_id    TEXT,
+            card_name   TEXT,
+            last4       TEXT,
+            card_type   TEXT,
+            auth_date   TEXT,
+            auth_time   TEXT,
+            auth_area   TEXT,
+            amount      TEXT,
+            merchant    TEXT,
+            email_date  TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_tx_email ON transactions(email_id);
+
+        CREATE TABLE IF NOT EXISTS transfers (
+            rowid       INTEGER PRIMARY KEY AUTOINCREMENT,
+            email_id    TEXT UNIQUE,
+            data_json   TEXT,
+            email_date  TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS securities (
+            rowid       INTEGER PRIMARY KEY AUTOINCREMENT,
+            email_id    TEXT,
+            subject     TEXT,
+            filename    TEXT,
+            email_date  TEXT,
+            data_json   TEXT,
+            UNIQUE(email_id, filename)
+        );
+
+        CREATE TABLE IF NOT EXISTS sync_log (
+            rowid       INTEGER PRIMARY KEY AUTOINCREMENT,
+            synced_at   TEXT,
+            status      TEXT,
+            message     TEXT
+        );
+        """)
+
+
+_init_db()
+
+_sync_lock = threading.Lock()
+_is_syncing = False  # 全域同步狀態旗標
+
+
 def get_credentials():
+    """優先從 session 讀取；若無，從 token.json 讀取"""
     creds = None
     if "credentials" in session:
         creds = Credentials(**session["credentials"])
+    elif os.path.exists(TOKEN_FILE):
+        with open(TOKEN_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        creds = Credentials(**data)
     return creds
 
 
 def save_credentials(creds):
-    session["credentials"] = {
-        "token": creds.token,
+    data = {
+        "token":         creds.token,
         "refresh_token": creds.refresh_token,
-        "token_uri": creds.token_uri,
-        "client_id": creds.client_id,
+        "token_uri":     creds.token_uri,
+        "client_id":     creds.client_id,
         "client_secret": creds.client_secret,
-        "scopes": creds.scopes,
+        "scopes":        list(creds.scopes) if creds.scopes else [],
     }
+    session["credentials"] = data
+    with open(TOKEN_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+# ── 同步核心 ────────────────────────────────────────────────────────────────────────
+
+def _do_sync(creds):
+    """抓取 Gmail 資料並 upsert 至 SQLite。回傳 (ok: bool, msg: str)"""
+    try:
+        service = build("gmail", "v1", credentials=creds)
+        with _db_connect() as conn:
+            synced_at = datetime.now().isoformat(timespec="seconds")
+
+            # 1. 一般郵件
+            results = service.users().messages().list(
+                userId="me", q=SEARCH_QUERY, maxResults=50
+            ).execute()
+            for msg_ref in results.get("messages", []):
+                if conn.execute("SELECT 1 FROM messages WHERE id=?", (msg_ref["id"],)).fetchone():
+                    continue
+                msg = service.users().messages().get(
+                    userId="me", id=msg_ref["id"], format="full"
+                ).execute()
+                headers = {h["name"]: h["value"] for h in msg["payload"].get("headers", [])}
+                atts = []
+                _collect_attachments(msg["payload"], msg_ref["id"], atts)
+                conn.execute(
+                    "INSERT OR IGNORE INTO messages(id,subject,sender,date,snippet,attachments,synced_at) VALUES(?,?,?,?,?,?,?)",
+                    (msg_ref["id"], headers.get("Subject",""), headers.get("From",""),
+                     headers.get("Date",""), msg.get("snippet",""),
+                     json.dumps(atts, ensure_ascii=False), synced_at)
+                )
+
+            # 2. 交易明細
+            results = service.users().messages().list(
+                userId="me", q=f'subject:"{TRANSACTION_QUERY}"', maxResults=100
+            ).execute()
+            for msg_ref in results.get("messages", []):
+                if conn.execute("SELECT 1 FROM transactions WHERE email_id=?", (msg_ref["id"],)).fetchone():
+                    continue
+                msg = service.users().messages().get(
+                    userId="me", id=msg_ref["id"], format="full"
+                ).execute()
+                headers    = {h["name"]: h["value"] for h in msg["payload"].get("headers", [])}
+                email_date = headers.get("Date", "")
+                rows       = _parse_transactions(_get_body_html(msg["payload"]))
+                for r in rows:
+                    conn.execute(
+                        """INSERT INTO transactions
+                           (email_id,card_name,last4,card_type,auth_date,auth_time,auth_area,amount,merchant,email_date)
+                           VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                        (msg_ref["id"], r["用卡名稱"], r["卡號後4碼"], r["主/附卡"],
+                         r["授權日期"], r["授權時間"], r["授權地區"],
+                         r["授權金額(約當臺幣)"], r["商店名稱"], email_date)
+                    )
+
+            # 3. 轉帳通知
+            results = service.users().messages().list(
+                userId="me", q=f'subject:"{TRANSFER_QUERY}"', maxResults=200
+            ).execute()
+            for msg_ref in results.get("messages", []):
+                if conn.execute("SELECT 1 FROM transfers WHERE email_id=?", (msg_ref["id"],)).fetchone():
+                    continue
+                msg = service.users().messages().get(
+                    userId="me", id=msg_ref["id"], format="full"
+                ).execute()
+                headers    = {h["name"]: h["value"] for h in msg["payload"].get("headers", [])}
+                email_date = headers.get("Date", "")
+                subject    = headers.get("Subject", "")
+                rec = _parse_transfer_html(_get_body_html(msg["payload"]), email_date, subject)
+                if rec:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO transfers(email_id,data_json,email_date) VALUES(?,?,?)",
+                        (msg_ref["id"], json.dumps(rec, ensure_ascii=False), email_date)
+                    )
+
+            # 4. 有價證券對帳單
+            results = service.users().messages().list(
+                userId="me",
+                q=f'subject:"{SECURITIES_QUERY}" has:attachment filename:pdf',
+                maxResults=50,
+            ).execute()
+            for msg_ref in results.get("messages", []):
+                msg = service.users().messages().get(
+                    userId="me", id=msg_ref["id"], format="full"
+                ).execute()
+                headers    = {h["name"]: h["value"] for h in msg["payload"].get("headers", [])}
+                email_date = headers.get("Date", "")
+                subject    = headers.get("Subject", "")
+                pdf_atts   = []
+                _collect_pdf_attachments(msg["payload"], msg_ref["id"], pdf_atts)
+                for att in pdf_atts:
+                    if conn.execute(
+                        "SELECT 1 FROM securities WHERE email_id=? AND filename=?",
+                        (msg_ref["id"], att["filename"])
+                    ).fetchone():
+                        continue
+                    try:
+                        pdf_bytes = _fetch_pdf_bytes(service, msg_ref["id"], att["attachment_id"])
+                        report    = _parse_securities_pdf(pdf_bytes, email_date)
+                        report["subject"]  = subject
+                        report["filename"] = att["filename"]
+                        conn.execute(
+                            "INSERT OR IGNORE INTO securities(email_id,subject,filename,email_date,data_json) VALUES(?,?,?,?,?)",
+                            (msg_ref["id"], subject, att["filename"], email_date,
+                             json.dumps(report, ensure_ascii=False))
+                        )
+                    except Exception as e:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO securities(email_id,subject,filename,email_date,data_json) VALUES(?,?,?,?,?)",
+                            (msg_ref["id"], subject, att["filename"], email_date,
+                             json.dumps({"error": str(e), "transactions": [], "totals": {}, "notes": {}},
+                                        ensure_ascii=False))
+                        )
+
+            conn.execute(
+                "INSERT INTO sync_log(synced_at,status,message) VALUES(?,?,?)",
+                (synced_at, "ok", "同步完成")
+            )
+        return True, f"同步完成 {synced_at}"
+    except Exception as e:
+        with _db_connect() as conn:
+            conn.execute(
+                "INSERT INTO sync_log(synced_at,status,message) VALUES(?,?,?)",
+                (datetime.now().isoformat(timespec="seconds"), "error", str(e))
+            )
+        return False, str(e)
 
 
 @app.route("/")
 def index():
     creds = get_credentials()
+    authenticated = bool(creds and creds.valid)
+    last_sync = None
+    with _db_connect() as conn:
+        row = conn.execute(
+            "SELECT synced_at, status, message FROM sync_log ORDER BY rowid DESC LIMIT 1"
+        ).fetchone()
+        if row:
+            last_sync = dict(row)
+    return render_template("index.html", authenticated=authenticated, last_sync=last_sync,
+                           is_syncing=_is_syncing)
+
+
+@app.route("/sync", methods=["POST"])
+def sync():
+    global _is_syncing
+    creds = get_credentials()
     if not creds or not creds.valid:
-        return render_template("index.html", authenticated=False)
-    return render_template("index.html", authenticated=True)
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+            save_credentials(creds)
+        else:
+            from flask import jsonify
+            return jsonify({"ok": False, "error": "not_authenticated"}), 401
+    if not _sync_lock.acquire(blocking=False):
+        from flask import jsonify
+        return jsonify({"ok": False, "error": "already_syncing"}), 409
+    _is_syncing = True
+    def _run():
+        global _is_syncing
+        try:
+            _do_sync(creds)
+        finally:
+            _is_syncing = False
+            _sync_lock.release()
+    threading.Thread(target=_run, daemon=True).start()
+    from flask import jsonify
+    return jsonify({"ok": True})
+
+
+@app.route("/sync/status")
+def sync_status():
+    from flask import jsonify
+    return jsonify({"syncing": _is_syncing})
+
+
+@app.route("/clear-db", methods=["POST"])
+def clear_db():
+    creds = get_credentials()
+    if not creds or not creds.valid:
+        return redirect(url_for("login"))
+    with _db_connect() as conn:
+        conn.executescript("""
+            DELETE FROM messages;
+            DELETE FROM transactions;
+            DELETE FROM transfers;
+            DELETE FROM securities;
+            DELETE FROM sync_log;
+        """)
+    return redirect(url_for("index"))
 
 
 def _generate_pkce_pair():
@@ -131,43 +395,20 @@ def messages():
         else:
             return redirect(url_for("login"))
 
-    service = build("gmail", "v1", credentials=creds)
-
-    # 取得符合關鍵字的郵件清單
-    results = service.users().messages().list(
-        userId="me",
-        q=SEARCH_QUERY,
-        maxResults=50,
-    ).execute()
-
-    messages_list = results.get("messages", [])
     emails = []
-
-    for msg_ref in messages_list:
-        msg = service.users().messages().get(
-            userId="me",
-            id=msg_ref["id"],
-            format="full",
-        ).execute()
-
-        headers = {h["name"]: h["value"] for h in msg["payload"].get("headers", [])}
-        subject = headers.get("Subject", "(無主旨)")
-        sender = headers.get("From", "(未知寄件者)")
-        date = headers.get("Date", "")
-        snippet = msg.get("snippet", "")
-
-        # 收集附件資訊
-        attachments = []
-        _collect_attachments(msg["payload"], msg_ref["id"], attachments)
-
-        emails.append({
-            "id": msg_ref["id"],
-            "subject": subject,
-            "sender": sender,
-            "date": date,
-            "snippet": snippet,
-            "attachments": attachments,
-        })
+    with _db_connect() as conn:
+        rows = conn.execute(
+            "SELECT id, subject, sender, date, snippet, attachments FROM messages ORDER BY rowid DESC"
+        ).fetchall()
+        for row in rows:
+            emails.append({
+                "id":          row["id"],
+                "subject":     row["subject"],
+                "sender":      row["sender"],
+                "date":        row["date"],
+                "snippet":     row["snippet"],
+                "attachments": json.loads(row["attachments"] or "[]"),
+            })
 
     return render_template("messages.html", emails=emails, label=SEARCH_LABEL)
 
@@ -377,82 +618,69 @@ def transactions():
         else:
             return redirect(url_for("login"))
 
-    service = build("gmail", "v1", credentials=creds)
-
-    results = service.users().messages().list(
-        userId="me",
-        q=f'subject:"{TRANSACTION_QUERY}"',
-        maxResults=100,
-    ).execute()
-    messages_list = results.get("messages", [])
-
-    all_rows = []
+    all_rows    = []
     email_count = 0
+    with _db_connect() as conn:
+        rows = conn.execute(
+            """SELECT email_id, card_name, last4, card_type, auth_date, auth_time,
+                      auth_area, amount, merchant, email_date
+               FROM transactions
+               ORDER BY auth_date DESC, auth_time DESC"""
+        ).fetchall()
+        seen_emails = set()
+        for row in rows:
+            seen_emails.add(row["email_id"])
+            all_rows.append({
+                "用卡名稱":           row["card_name"],
+                "卡號後4碼":          row["last4"],
+                "主/附卡":            row["card_type"],
+                "授權日期":           row["auth_date"],
+                "授權時間":           row["auth_time"],
+                "授權地區":           row["auth_area"],
+                "授權金額(約當臺幣)": row["amount"],
+                "商店名稱":           row["merchant"],
+                "_email_date":        row["email_date"],
+            })
+        email_count = len(seen_emails)
 
-    for msg_ref in messages_list:
-        msg = service.users().messages().get(
-            userId="me", id=msg_ref["id"], format="full"
-        ).execute()
-        headers = {h["name"]: h["value"] for h in msg["payload"].get("headers", [])}
-        email_date = headers.get("Date", "")
-
-        html = _get_body_html(msg["payload"])
-        rows = _parse_transactions(html)
-
-        if rows:
-            email_count += 1
-            for r in rows:
-                r["_email_date"] = email_date  # 供排序用，不顯示
-            all_rows.extend(rows)
-
-    # 依授權日期、授權時間排序（新→舊）
-    all_rows.sort(key=lambda r: (r["授權日期"], r["授權時間"]), reverse=True)
-
-    # 計算總金額
     total = sum(int(r["授權金額(約當臺幣)"]) for r in all_rows if r["授權金額(約當臺幣)"].isdigit())
-
     return render_template(
         "transactions.html",
-        rows=all_rows,
-        columns=COLUMNS,
-        total=total,
-        email_count=email_count,
+        rows=all_rows, columns=COLUMNS, total=total, email_count=email_count,
     )
 
 
 @app.route("/transactions/export")
 def transactions_export():
-    """匯出 CSV"""
     creds = get_credentials()
     if not creds or not creds.valid:
         return redirect(url_for("login"))
 
-    service = build("gmail", "v1", credentials=creds)
-    results = service.users().messages().list(
-        userId="me",
-        q=f'subject:"{TRANSACTION_QUERY}"',
-        maxResults=100,
-    ).execute()
-    messages_list = results.get("messages", [])
+    with _db_connect() as conn:
+        rows = conn.execute(
+            "SELECT card_name,last4,card_type,auth_date,auth_time,auth_area,amount,merchant "
+            "FROM transactions ORDER BY auth_date DESC, auth_time DESC"
+        ).fetchall()
 
-    all_rows = []
-    for msg_ref in messages_list:
-        msg = service.users().messages().get(
-            userId="me", id=msg_ref["id"], format="full"
-        ).execute()
-        html = _get_body_html(msg["payload"])
-        all_rows.extend(_parse_transactions(html))
-
-    all_rows.sort(key=lambda r: (r["授權日期"], r["授權時間"]), reverse=True)
-
+    all_rows = [
+        {
+            "用卡名稱":           r["card_name"],
+            "卡號後4碼":          r["last4"],
+            "主/附卡":            r["card_type"],
+            "授權日期":           r["auth_date"],
+            "授權時間":           r["auth_time"],
+            "授權地區":           r["auth_area"],
+            "授權金額(約當臺幣)": r["amount"],
+            "商店名稱":           r["merchant"],
+        }
+        for r in rows
+    ]
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=COLUMNS, extrasaction="ignore")
     writer.writeheader()
     writer.writerows(all_rows)
-
     return Response(
-        "\ufeff" + buf.getvalue(),   # BOM for Excel UTF-8
-        mimetype="text/csv",
+        "\ufeff" + buf.getvalue(), mimetype="text/csv",
         headers={"Content-Disposition": "attachment; filename=transactions.csv"},
     )
 
@@ -489,66 +717,39 @@ def _parse_transfer_html(html: str, email_date: str, subject: str) -> dict | Non
 
 @app.route("/transfers")
 def transfers():
-    service, err = _get_service()
-    if err:
-        return err
-
-    results = service.users().messages().list(
-        userId="me",
-        q=f'subject:"{TRANSFER_QUERY}"',
-        maxResults=200,
-    ).execute()
-    messages_list = results.get("messages", [])
+    creds = get_credentials()
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+            save_credentials(creds)
+        else:
+            return redirect(url_for("login"))
 
     records = []
-    for msg_ref in messages_list:
-        msg = service.users().messages().get(
-            userId="me", id=msg_ref["id"], format="full"
-        ).execute()
-        headers    = {h["name"]: h["value"] for h in msg["payload"].get("headers", [])}
-        email_date = headers.get("Date", "")
-        subject    = headers.get("Subject", "")
-        html       = _get_body_html(msg["payload"])
-        rec = _parse_transfer_html(html, email_date, subject)
-        if rec:
-            records.append(rec)
+    with _db_connect() as conn:
+        rows = conn.execute(
+            "SELECT data_json FROM transfers ORDER BY email_date DESC"
+        ).fetchall()
+        for row in rows:
+            records.append(json.loads(row["data_json"]))
 
     records.sort(key=lambda r: r.get("交易時間", ""), reverse=True)
-
     total_out = sum(
         int(r["交易金額"]) for r in records
         if r.get("交易金額", "").lstrip("-+").isdigit()
     )
-
     return render_template("transfers.html", records=records, total_out=total_out)
 
 
 @app.route("/transfers/export")
 def transfers_export():
-    service, err = _get_service()
-    if err:
-        return err
+    creds = get_credentials()
+    if not creds or not creds.valid:
+        return redirect(url_for("login"))
 
-    results = service.users().messages().list(
-        userId="me",
-        q=f'subject:"{TRANSFER_QUERY}"',
-        maxResults=200,
-    ).execute()
-    messages_list = results.get("messages", [])
-
-    records = []
-    for msg_ref in messages_list:
-        msg = service.users().messages().get(
-            userId="me", id=msg_ref["id"], format="full"
-        ).execute()
-        headers    = {h["name"]: h["value"] for h in msg["payload"].get("headers", [])}
-        email_date = headers.get("Date", "")
-        subject    = headers.get("Subject", "")
-        html       = _get_body_html(msg["payload"])
-        rec = _parse_transfer_html(html, email_date, subject)
-        if rec:
-            records.append(rec)
-
+    with _db_connect() as conn:
+        rows = conn.execute("SELECT data_json FROM transfers ORDER BY email_date DESC").fetchall()
+    records = [json.loads(r["data_json"]) for r in rows]
     records.sort(key=lambda r: r.get("交易時間", ""), reverse=True)
 
     fieldnames = ["交易時間", "交易金額", "手續費",
@@ -558,10 +759,8 @@ def transfers_export():
     writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
     writer.writeheader()
     writer.writerows(records)
-
     return Response(
-        "\ufeff" + buf.getvalue(),
-        mimetype="text/csv",
+        "\ufeff" + buf.getvalue(), mimetype="text/csv",
         headers={"Content-Disposition": "attachment; filename=transfers.csv"},
     )
 
@@ -788,54 +987,28 @@ def _get_service():
 
 @app.route("/securities")
 def securities():
-    service, err = _get_service()
-    if err:
-        return err
+    creds = get_credentials()
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+            save_credentials(creds)
+        else:
+            return redirect(url_for("login"))
 
-    results = service.users().messages().list(
-        userId="me",
-        q=f'subject:"{SECURITIES_QUERY}" has:attachment filename:pdf',
-        maxResults=50,
-    ).execute()
-    messages_list = results.get("messages", [])
-
-    reports = []  # list of parsed report dicts
-
-    for msg_ref in messages_list:
-        msg = service.users().messages().get(
-            userId="me", id=msg_ref["id"], format="full"
-        ).execute()
-        headers    = {h["name"]: h["value"] for h in msg["payload"].get("headers", [])}
-        email_date = headers.get("Date", "")
-        subject    = headers.get("Subject", "")
-
-        # 找 PDF 附檔
-        pdf_attachments = []
-        _collect_pdf_attachments(msg["payload"], msg_ref["id"], pdf_attachments)
-
-        for att in pdf_attachments:
-            try:
-                pdf_bytes = _fetch_pdf_bytes(service, msg_ref["id"], att["attachment_id"])
-                report = _parse_securities_pdf(pdf_bytes, email_date)
-                report["subject"]  = subject
-                report["filename"] = att["filename"]
-                reports.append(report)
-            except Exception as e:
-                reports.append({
-                    "subject":      subject,
-                    "filename":     att["filename"],
-                    "email_date":   email_date,
-                    "transactions": [],
-                    "totals":       {},
-                    "notes":        {},
-                    "error":        str(e),
-                })
+    reports = []
+    with _db_connect() as conn:
+        rows = conn.execute(
+            "SELECT subject, filename, email_date, data_json FROM securities ORDER BY email_date DESC"
+        ).fetchall()
+        for row in rows:
+            data = json.loads(row["data_json"])
+            data["subject"]    = row["subject"]
+            data["filename"]   = row["filename"]
+            data["email_date"] = row["email_date"]
+            reports.append(data)
 
     return render_template(
-        "securities.html",
-        reports=reports,
-        tx_cols=SEC_TX_COLS,
-        total_cols=SEC_TOTAL_COLS,
+        "securities.html", reports=reports, tx_cols=SEC_TX_COLS, total_cols=SEC_TOTAL_COLS
     )
 
 
@@ -855,48 +1028,35 @@ def _collect_pdf_attachments(payload, message_id, result):
 
 @app.route("/securities/export")
 def securities_export():
-    service, err = _get_service()
-    if err:
-        return err
-
-    results = service.users().messages().list(
-        userId="me",
-        q=f'subject:"{SECURITIES_QUERY}" has:attachment filename:pdf',
-        maxResults=50,
-    ).execute()
-    messages_list = results.get("messages", [])
+    creds = get_credentials()
+    if not creds or not creds.valid:
+        return redirect(url_for("login"))
 
     all_rows = []
-    for msg_ref in messages_list:
-        msg = service.users().messages().get(
-            userId="me", id=msg_ref["id"], format="full"
-        ).execute()
-        headers    = {h["name"]: h["value"] for h in msg["payload"].get("headers", [])}
-        email_date = headers.get("Date", "")
-        subject    = headers.get("Subject", "")
-        pdf_attachments = []
-        _collect_pdf_attachments(msg["payload"], msg_ref["id"], pdf_attachments)
-        for att in pdf_attachments:
-            try:
-                pdf_bytes = _fetch_pdf_bytes(service, msg_ref["id"], att["attachment_id"])
-                report = _parse_securities_pdf(pdf_bytes, email_date)
-                for tx in report["transactions"]:
-                    tx["來源郵件"] = subject
-                    all_rows.append(tx)
-            except Exception:
-                pass
+    with _db_connect() as conn:
+        rows = conn.execute(
+            "SELECT subject, data_json FROM securities ORDER BY email_date DESC"
+        ).fetchall()
+        for row in rows:
+            data = json.loads(row["data_json"])
+            for tx in data.get("transactions", []):
+                tx["來源郵件"] = row["subject"]
+                all_rows.append(tx)
 
     fieldnames = ["來源郵件"] + SEC_TX_COLS
     buf = io.StringIO()
     writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
     writer.writeheader()
     writer.writerows(all_rows)
-
     return Response(
-        "\ufeff" + buf.getvalue(),
-        mimetype="text/csv",
+        "\ufeff" + buf.getvalue(), mimetype="text/csv",
         headers={"Content-Disposition": "attachment; filename=securities.csv"},
     )
+
+
+@app.route("/.well-known/appspecific/com.chrome.devtools.json")
+def chrome_devtools():
+    return Response("{}", mimetype="application/json")
 
 
 if __name__ == "__main__":
